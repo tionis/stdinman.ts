@@ -701,6 +701,12 @@ async function listDirectShowAudioDevices(ffmpegPath: string): Promise<void> {
   let inAudioSection = false;
 
   for (const line of result.stderr.split(/\r?\n/)) {
+    const taggedAudioMatch = line.match(/"([^"]+)"\s+\(audio\)/i);
+    if (taggedAudioMatch && !devices.includes(taggedAudioMatch[1])) {
+      devices.push(taggedAudioMatch[1]);
+      continue;
+    }
+
     if (line.includes("DirectShow audio devices")) {
       inAudioSection = true;
       continue;
@@ -715,13 +721,17 @@ async function listDirectShowAudioDevices(ffmpegPath: string): Promise<void> {
       continue;
     }
 
-    const match = line.match(/"([^"]+)"/);
-    if (!match) {
+    if (/Alternative name/i.test(line) || /\(video\)/i.test(line)) {
       continue;
     }
 
-    if (!devices.includes(match[1])) {
-      devices.push(match[1]);
+    const sectionMatch = line.match(/"([^"]+)"/);
+    if (!sectionMatch) {
+      continue;
+    }
+
+    if (!devices.includes(sectionMatch[1])) {
+      devices.push(sectionMatch[1]);
     }
   }
 

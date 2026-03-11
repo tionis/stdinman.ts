@@ -4,7 +4,9 @@
   "description": "Pipe audio sources to Discord voice with a bot using discord.js and DAVE-capable @discordjs/voice.",
   "type": "module",
   "author": "tionis.dev",
-  "contributors": [],
+  "contributors": [
+    "ckcr4lyf"
+  ],
   "license": "WTFPL",
   "bin": {
     "stdinman": "./dist/stdinman.js"
