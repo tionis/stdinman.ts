@@ -1,0 +1,31 @@
+{
+  "name": "stdinman.ts",
+  "version": "0.1.0",
+  "description": "Pipe audio sources to Discord voice with a bot using discord.js and DAVE-capable @discordjs/voice.",
+  "type": "module",
+  "author": "tionis.dev",
+  "contributors": [],
+  "license": "WTFPL",
+  "bin": {
+    "stdinman": "./dist/stdinman.js"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "bun build ./ts/stdinman.ts --target node --packages external --outfile ./dist/stdinman.js",
+    "dev": "bun run ./ts/stdinman.ts",
+    "start": "node ./dist/stdinman.js",
+    "check": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.19.1",
+    "@snazzah/davey": "^0.1.10",
+    "discord.js": "^14.25.1",
+    "smol-toml": "^1.6.0"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.10",
+    "typescript": "^5.9.3"
+  }
+}

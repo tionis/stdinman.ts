@@ -1,0 +1,4 @@
+.env
+/.bun
+/dist
+/node_modules
