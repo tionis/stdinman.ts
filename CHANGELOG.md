@@ -19,6 +19,9 @@
 
 ### Fixed
 
+- Live capture had small audible gaps: audio arrived just in time, so any timing jitter made the player miss 20 ms frames (2–9 per 10 s in measurements). A 150 ms jitter buffer now absorbs this, bringing it to zero in the same measurements.
+- Live capture sources (`pipewire`, `pulse-monitor`, `windows-dshow`, `windows-loopback`, `macos-avfoundation`) slowly gained latency: the capture device's clock and the system clock that paces Discord playback never match exactly. A drift guard now drops about 150–250 ms of audio whenever more than 400 ms has built up. With typical clock differences, that happens roughly every 25 minutes to 2 hours.
+- `stdin` and `command` are now held to real time as well, so `cat song.raw | stdinman` or a decoder without `-re` plays correctly without reading the whole input into memory. Under Bun, stdin is read through a pull-based file stream, and `command` output through a FIFO.
 - Under Bun (`bun run`, and the standalone binaries), Spotify ignored pause and song changes: Bun reads child process output eagerly regardless of backpressure, so librespot decoded at about 100× real time and over an hour of audio queued up in memory. Fast sources (librespot, the media decoder) now write into a FIFO that stdinman reads only as fast as audio is played, on Linux and macOS. On Windows, media decoding runs at native speed instead; Spotify on Windows should run under Node until there is a fix there.
 - Pausing, skipping and seeking in Spotify took many seconds to be heard: librespot's pipe backend runs faster than real time, so 13 s (under Node) to several minutes (under Bun / the standalone binary) of audio piled up in pipes and ffmpeg. Spotify and media audio is now released no faster than Discord plays it, which keeps the delay below a second.
 
@@ -48,6 +51,9 @@
 
 ### Fixed
 
+- Live capture had small audible gaps: audio arrived just in time, so any timing jitter made the player miss 20 ms frames (2–9 per 10 s in measurements). A 150 ms jitter buffer now absorbs this, bringing it to zero in the same measurements.
+- Live capture sources (`pipewire`, `pulse-monitor`, `windows-dshow`, `windows-loopback`, `macos-avfoundation`) slowly gained latency: the capture device's clock and the system clock that paces Discord playback never match exactly. A drift guard now drops about 150–250 ms of audio whenever more than 400 ms has built up. With typical clock differences, that happens roughly every 25 minutes to 2 hours.
+- `stdin` and `command` are now held to real time as well, so `cat song.raw | stdinman` or a decoder without `-re` plays correctly without reading the whole input into memory. Under Bun, stdin is read through a pull-based file stream, and `command` output through a FIFO.
 - Under Bun (`bun run`, and the standalone binaries), Spotify ignored pause and song changes: Bun reads child process output eagerly regardless of backpressure, so librespot decoded at about 100× real time and over an hour of audio queued up in memory. Fast sources (librespot, the media decoder) now write into a FIFO that stdinman reads only as fast as audio is played, on Linux and macOS. On Windows, media decoding runs at native speed instead; Spotify on Windows should run under Node until there is a fix there.
 - Pausing, skipping and seeking in Spotify took many seconds to be heard: librespot's pipe backend runs faster than real time, so 13 s (under Node) to several minutes (under Bun / the standalone binary) of audio piled up in pipes and ffmpeg. Spotify and media audio is now released no faster than Discord plays it, which keeps the delay below a second.
 

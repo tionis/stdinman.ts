@@ -221,5 +221,6 @@ export function createPipeWireSource(options: {
     },
     startupMessage: `starting PipeWire capture from ${label}`,
     awaitInitialPlayback: false,
+    pacing: "drop",
   };
 }

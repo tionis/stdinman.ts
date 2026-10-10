@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { generateDependencyReport } from "@discordjs/voice";
 import { access } from "node:fs/promises";
+import { isatty } from "node:tty";
 import packageJson from "../package.json" with { type: "json" };
 import {
   UsageError,
@@ -97,7 +98,7 @@ async function main(argv: string[]): Promise<number> {
 
   validateRunSettings(settings, configPath);
 
-  if (settings.audioSource === "stdin" && process.stdin.isTTY) {
+  if (settings.audioSource === "stdin" && isatty(0)) {
     throw new UsageError(
       "stdin is a terminal. Pipe raw PCM into stdinman (see --help), or choose another --source such as spotify or pulse-monitor",
     );

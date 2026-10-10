@@ -1,9 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { EventEmitter, once } from "node:events";
+import { EventEmitter } from "node:events";
+import { createReadStream } from "node:fs";
 import { PassThrough, type Readable } from "node:stream";
 import { trackChild } from "./children.ts";
 import type { InputFormat } from "./config.ts";
 import { spawnPiped, spawnWithBackpressure } from "./fifo.ts";
+import type { PacingMode, PcmLayout } from "./pacer.ts";
 import { LineTail, debug, info, isDebugEnabled, warn } from "./log.ts";
 
 export type FfmpegInputSpec = {
@@ -27,71 +29,22 @@ export type PreparedAudioSource = {
   /** Pause (rather than discard) audio while the bot is not in a channel. For finite media. */
   pauseWhenUnheard?: boolean;
   /**
-   * The source produces audio faster than real time (librespot's pipe backend, file decoding).
-   * Such sources are paced, otherwise pipes and ffmpeg buffer many seconds of audio and
-   * pausing or skipping takes that long to be heard.
+   * How audio is kept in step with playback (see pacer.ts): "wait" for sources that can
+   * run faster than real time, "drop" for live capture whose clock drifts. Unset: unpaced.
    */
-  fasterThanRealtime?: boolean;
+  pacing?: PacingMode;
 };
 
 const BYTES_PER_SAMPLE: Record<Exclude<InputFormat, "wav">, number> = { f32le: 4, s16le: 2, s32le: 4 };
 
-/** Byte rate of raw PCM input, or undefined for self-describing formats such as WAV. */
-export function pcmBytesPerSecond(spec: FfmpegInputSpec): number | undefined {
-  return spec.format === "wav" ? undefined : BYTES_PER_SAMPLE[spec.format] * spec.sampleRate * spec.channels;
-}
+/** Byte layout of the transcoder input, or "wav" when it is read from the stream's header. */
+export function pcmLayout(spec: FfmpegInputSpec): PcmLayout | "wav" {
+  if (spec.format === "wav") {
+    return "wav";
+  }
 
-/** How much audio the pacer lets run ahead of playback, to absorb encoder delay and timer jitter. */
-export const PACER_LEAD_MS = 250;
-/** Until playback starts, ffmpeg needs a little more input before it emits its first packets. */
-const PACER_STARTUP_LEAD_MS = 1_000;
-const PACER_POLL_MS = 10;
-
-/**
- * Releases PCM only as fast as it is actually played: at most `leadMs` ahead of
- * `playedMs()`, the amount of real audio the consumer has played so far. Following
- * the playback position (rather than the wall clock) also absorbs encoder startup,
- * reconnects and paused playback without building up delay.
- */
-export function createRealtimePacer(
-  input: Readable,
-  bytesPerSecond: number,
-  playedMs: () => number,
-  leadMs = PACER_LEAD_MS,
-): Readable {
-  const output = new PassThrough();
-  // Errors are reported through the input stream's own listeners.
-  output.on("error", () => {});
-  let sentMs = 0;
-  const allowedMs = (): number => {
-    const played = playedMs();
-    return played + (played > 0 ? leadMs : Math.max(leadMs, PACER_STARTUP_LEAD_MS));
-  };
-
-  void (async () => {
-    try {
-      for await (const chunk of input as AsyncIterable<Buffer>) {
-        while (!output.destroyed && sentMs > allowedMs()) {
-          await new Promise((resolve) => setTimeout(resolve, PACER_POLL_MS));
-        }
-
-        if (output.destroyed) {
-          break;
-        }
-
-        sentMs += (chunk.length / bytesPerSecond) * 1000;
-        if (!output.write(chunk)) {
-          await once(output, "drain");
-        }
-      }
-
-      output.end();
-    } catch (pacerError) {
-      output.destroy(pacerError instanceof Error ? pacerError : new Error(String(pacerError)));
-    }
-  })();
-
-  return output;
+  const frameBytes = BYTES_PER_SAMPLE[spec.format] * spec.channels;
+  return { bytesPerSecond: frameBytes * spec.sampleRate, frameBytes };
 }
 
 export const CAPTURE_SAMPLE_RATE = 48_000;
@@ -107,13 +60,22 @@ export function rawPcmInput(
 }
 
 /**
- * Reads PCM from `input` (normally process.stdin) but discards everything until
+ * Opens stdin as a pull-based file stream. Unlike process.stdin, this respects
+ * backpressure under Bun too, so a fast writer (`cat song.raw | stdinman`) is
+ * held back instead of being read into memory.
+ */
+function openStdin(): NodeJS.ReadableStream {
+  return createReadStream("", { fd: 0, highWaterMark: 16 * 1024, autoClose: false });
+}
+
+/**
+ * Reads PCM from `input` (normally stdin) but discards everything until
  * start() is called, so audio that arrives while the bot is still connecting is
  * dropped instead of being played late.
  */
 export function createSwitchingStdinStream(
   pcm: { inputFormat: InputFormat; sampleRate: number; channels: number },
-  input: NodeJS.ReadableStream = process.stdin,
+  input: NodeJS.ReadableStream = openStdin(),
 ): PreparedAudioSource {
   const output = new PassThrough();
   let forwarding = false;
@@ -171,6 +133,8 @@ export function createSwitchingStdinStream(
     },
     startupMessage: "going to pipe stdin to the bot",
     awaitInitialPlayback: true,
+    // stdin may carry a file (faster than real time) or a live stream; waiting suits both.
+    pacing: "wait",
   };
 }
 
@@ -195,7 +159,9 @@ export function createProcessAudioSource(options: {
   nowPlaying?: EventEmitter<NowPlayingEvents>;
   /** Called once the source has stopped or failed, e.g. to remove temporary files. */
   cleanup?: () => void;
-  fasterThanRealtime?: boolean;
+  pacing?: PacingMode;
+  /** Read stdout through a FIFO for real backpressure (for producers faster than real time). */
+  useFifo?: boolean;
 }): PreparedAudioSource {
   const output = new PassThrough();
   const stderrTail = new LineTail();
@@ -215,7 +181,7 @@ export function createProcessAudioSource(options: {
     stream: output,
     ffmpegInput: options.ffmpegInput,
     nowPlaying: options.nowPlaying,
-    fasterThanRealtime: options.fasterThanRealtime,
+    pacing: options.pacing,
     start: (): void => {
       if (child || stopping) {
         return;
@@ -224,7 +190,7 @@ export function createProcessAudioSource(options: {
       debug(`starting ${options.logPrefix} source: ${options.command} ${options.args.join(" ")}`);
       const spawnOptions = { windowsHide: true, shell: options.shell };
       // Producers faster than real time need real backpressure, or they run far ahead of playback.
-      const spawned = options.fasterThanRealtime
+      const spawned = options.useFifo
         ? spawnWithBackpressure(options.command, options.args, spawnOptions)
         : spawnPiped(options.command, options.args, spawnOptions);
       child = spawned.child;
@@ -310,6 +276,7 @@ export function createPulseMonitorSource(options: { parecPath: string; audioDevi
     startedMessage: `PulseAudio/PipeWire capture started from source "${options.audioDevice}"`,
     logPrefix: "parec",
     awaitInitialPlayback: false,
+    pacing: "drop",
   });
 }
 
@@ -359,6 +326,7 @@ export function createWindowsDshowSource(options: { ffmpegPath: string; audioDev
     startedMessage: `DirectShow capture started from audio device "${options.audioDevice}"`,
     logPrefix: "ffmpeg-dshow",
     awaitInitialPlayback: false,
+    pacing: "drop",
   });
 }
 
@@ -382,6 +350,9 @@ export function createCommandSource(options: {
     startedMessage: "command started",
     logPrefix: "command",
     awaitInitialPlayback: false,
+    // The command may be a file decoder (faster than real time) or a live recorder; waiting suits both.
+    pacing: "wait",
+    useFifo: true,
   });
 }
 
@@ -446,6 +417,7 @@ export function createAvfoundationSource(options: { ffmpegPath: string; audioDev
     startedMessage: `AVFoundation capture started from audio device "${options.audioDevice}"`,
     logPrefix: "ffmpeg-avfoundation",
     awaitInitialPlayback: false,
+    pacing: "drop",
   });
 }
 

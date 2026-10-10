@@ -100,6 +100,7 @@ export function createWindowsLoopbackSource(options: { powershellPath: string; a
     startedMessage: `WASAPI loopback helper started for ${label}`,
     logPrefix: "wasapi-loopback",
     awaitInitialPlayback: false,
+    pacing: "drop",
     cleanup: script.remove,
   });
 }

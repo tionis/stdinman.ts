@@ -25,6 +25,7 @@ import {
 import type { Settings } from "./cli.ts";
 import { debug, describeError, error, info, isDebugEnabled, warn } from "./log.ts";
 import { createMediaSource, expandInputs } from "./media.ts";
+import { createPacer } from "./pacer.ts";
 import { createPipeWireSource, resolvePipeWireTarget } from "./pipewire.ts";
 import {
   type PreparedAudioSource,
@@ -32,8 +33,7 @@ import {
   createCommandSource,
   createFfmpegOpusStream,
   createPulseMonitorSource,
-  createRealtimePacer,
-  pcmBytesPerSecond,
+  pcmLayout,
   createSwitchingStdinStream,
   createWindowsDshowSource,
 } from "./sources.ts";
@@ -681,11 +681,19 @@ export async function runStream(settings: Settings): Promise<void> {
     info(source.startupMessage);
     // The resource is created below; the pacer only reads its position once audio flows.
     let resource: AudioResource<null> | undefined;
-    const bytesPerSecond = pcmBytesPerSecond(source.ffmpegInput);
-    const transcoderInput =
-      source.fasterThanRealtime && bytesPerSecond
-        ? createRealtimePacer(source.stream, bytesPerSecond, () => resource?.playbackDuration ?? 0)
-        : source.stream;
+    const transcoderInput = source.pacing
+      ? createPacer(source.stream, {
+          mode: source.pacing,
+          layout: pcmLayout(source.ffmpegInput),
+          playedMs: () => resource?.playbackDuration ?? 0,
+          onDrop: (droppedMs) => {
+            // Early drops discard audio captured while the encoder and playback were starting.
+            const log = (resource?.playbackDuration ?? 0) < 5_000 ? debug : info;
+            log(`dropped ${Math.round(droppedMs)} ms of audio to keep latency low (the capture device's clock runs ahead)`);
+          },
+          onUnpaced: (reason) => warn(`cannot pace the audio input (${reason}); latency may grow over time`),
+        })
+      : source.stream;
     const transcoder = createFfmpegOpusStream(settings.ffmpegPath, transcoderInput, source.ffmpegInput, {
       volume: settings.volume,
       opusBitrate: settings.opusBitrate,
