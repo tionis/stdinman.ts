@@ -101,6 +101,8 @@ export function createWindowsLoopbackSource(options: { powershellPath: string; a
     logPrefix: "wasapi-loopback",
     awaitInitialPlayback: false,
     pacing: "drop",
+    activity: "level",
+    continuous: true,
     cleanup: script.remove,
   });
 }

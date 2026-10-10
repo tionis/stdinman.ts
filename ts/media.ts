@@ -308,6 +308,8 @@ export function createMediaSource(options: { ffmpegPath: string; inputs: string[
     },
     pauseWhenUnheard: true,
     pacing: "wait",
+    activity: "running",
+    continuous: false,
     startupMessage: `playing ${options.inputs.length} input${options.inputs.length === 1 ? "" : "s"}${options.loop ? " on loop" : ""}`,
     awaitInitialPlayback: false,
   };

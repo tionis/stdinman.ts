@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Example launch agent; `stdinman service install` writes one with your paths.
+     Copy to ~/Library/LaunchAgents/ and run: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.tionis.stdinman.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.tionis.stdinman</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/stdinman</string>
+    <string>serve</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/Library/Logs/stdinman.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/Library/Logs/stdinman.log</string>
+</dict>
+</plist>

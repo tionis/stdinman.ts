@@ -3,13 +3,17 @@ import { validateLibrespotArgs } from "./spotify.ts";
 import {
   type AudioSource,
   ConfigError,
+  type JoinPolicy,
   type InputFormat,
   LIBRESPOT_BITRATES,
   type StdinmanConfig,
   parseAudioSource,
   parseChannels,
+  parseDuration,
   parseInputFormat,
+  parseJoinPolicy,
   parseSampleRate,
+  parseSilenceThreshold,
   parseLibrespotBitrate,
   parseOpusBitrate,
   parseVolume,
@@ -34,6 +38,11 @@ const OPTIONS = {
   loop: { type: "boolean" },
   command: { type: "string" },
   "follow-user": { type: "string" },
+  join: { type: "string" },
+  "idle-timeout": { type: "string" },
+  "silence-threshold": { type: "string" },
+  socket: { type: "string" },
+  "log-file": { type: "string" },
   "now-playing": { type: "boolean" },
   "no-now-playing": { type: "boolean" },
   volume: { type: "string" },
@@ -62,7 +71,11 @@ export type Command =
   | { kind: "devices-list" }
   | { kind: "config-path" }
   | { kind: "config-init" }
-  | { kind: "doctor" };
+  | { kind: "doctor" }
+  | { kind: "serve" }
+  /** Arguments after `ctl`, forwarded unparsed to the running instance. */
+  | { kind: "ctl"; args: string[] }
+  | { kind: "service"; action: "install" | "uninstall" | "status" };
 
 export type ParsedCli = {
   command: Command;
@@ -78,7 +91,20 @@ function parseCliValues(argv: string[]) {
   });
 }
 
+/** Index of the first positional argument (the command), honoring options that take values. */
+function firstPositionalIndex(argv: string[]): number | undefined {
+  const { tokens } = parseArgs({ args: argv, options: OPTIONS, strict: false, allowPositionals: true, tokens: true });
+  return tokens.find((token) => token.kind === "positional")?.index;
+}
+
 export function parseCli(argv: string[]): ParsedCli {
+  // `ctl` forwards everything after it to the running instance, including options.
+  const commandIndex = firstPositionalIndex(argv);
+  if (commandIndex !== undefined && argv[commandIndex] === "ctl") {
+    const local = parseCli(argv.slice(0, commandIndex));
+    return { command: { kind: "ctl", args: argv.slice(commandIndex + 1) }, values: local.values };
+  }
+
   let parsed: ReturnType<typeof parseCliValues>;
   try {
     parsed = parseCliValues(argv);
@@ -109,6 +135,17 @@ export function parseCli(argv: string[]): ParsedCli {
       return { command: { kind: "config-init" }, values };
     case "doctor":
       return { command: { kind: "doctor" }, values };
+    case "serve":
+      return { command: { kind: "serve" }, values };
+    case "service install":
+    case "service uninstall":
+    case "service status":
+      return {
+        command: { kind: "service", action: positionals[1] as "install" | "uninstall" | "status" },
+        values,
+      };
+    case "service":
+      throw new UsageError("usage: stdinman service install|uninstall|status");
     default:
       throw new UsageError(`unknown command: ${commandText} (see --help)`);
   }
@@ -127,6 +164,11 @@ export type Settings = {
   loop: boolean;
   command: string;
   followUserId: string;
+  join: JoinPolicy;
+  idleTimeoutMs: number;
+  silenceThresholdDb: number;
+  socketPath: string;
+  logFile: string;
   nowPlaying: boolean;
   volume: number;
   opusBitrate: number;
@@ -217,6 +259,12 @@ export function resolveSettings(
     loop: values.loop ?? config.loop,
     command: values.command ?? config.command,
     followUserId,
+    join: parseFlag("join", values.join, parseJoinPolicy) ?? config.join,
+    idleTimeoutMs: parseFlag("idle-timeout", values["idle-timeout"] ?? config.idle_timeout, parseDuration) ?? 0,
+    silenceThresholdDb:
+      parseFlag("silence-threshold", values["silence-threshold"], parseSilenceThreshold) ?? config.silence_threshold,
+    socketPath: values.socket ?? config.socket_path,
+    logFile: values["log-file"] ?? config.log_file,
     nowPlaying: values["no-now-playing"] ? false : (values["now-playing"] ?? config.now_playing),
     volume: parseFlag("volume", values.volume, parseVolume) ?? config.volume,
     opusBitrate: parseFlag("opus-bitrate", values["opus-bitrate"], parseOpusBitrate) ?? config.opus_bitrate,
@@ -304,14 +352,19 @@ export function sourceRequiresDevice(source: AudioSource): boolean {
 }
 
 /** Throws a UsageError if the settings cannot be used to start streaming. */
-export function validateRunSettings(settings: Settings, configPath: string, platform = process.platform): void {
+export function validateRunSettings(
+  settings: Settings,
+  configPath: string,
+  platform = process.platform,
+  options: { requireVoiceTarget?: boolean } = {},
+): void {
   if (!settings.botToken) {
     throw new UsageError(
       `missing bot token. Pass --bot-token, set STDINMAN_BOT_TOKEN, or add bot_token to ${configPath}`,
     );
   }
 
-  if (!settings.voiceChannelId && !settings.followUserId) {
+  if ((options.requireVoiceTarget ?? true) && !settings.voiceChannelId && !settings.followUserId) {
     throw new UsageError(
       `missing voice channel. Pass --voice-channel-id or --follow-user, or add voice_channel_id or follow_user_id to ${configPath}`,
     );
@@ -371,7 +424,11 @@ export function helpText(version: string): string {
 Stream audio from this computer into a Discord voice channel through a bot.
 
 Usage:
-  stdinman [OPTIONS]                 Join the voice channel and start streaming
+  stdinman [OPTIONS]                 Join the voice channel and stream until the source ends
+  stdinman serve [OPTIONS]           Run in the background: apply join rules, accept ctl commands
+  stdinman ctl COMMAND [ARGS]        Control a running "serve" instance ("stdinman ctl help")
+  stdinman service install|uninstall|status
+                                     Run "serve" as a user service (systemd, launchd, Task Scheduler)
   stdinman devices list [--source S] List capture devices for a source
   stdinman doctor [OPTIONS]          Check config and external tools
   stdinman config path               Print the config file location
@@ -382,6 +439,9 @@ Connection:
   --voice-channel-id <ID>      Voice or stage channel to join (env: STDINMAN_VOICE_CHANNEL_ID)
   --follow-user <USER_ID>      Instead, follow this user between voice channels: join when they
                                join, move with them, leave when they leave (env: STDINMAN_FOLLOW_USER_ID)
+  --join <always|activity>     Join whenever there is a target, or only while the source plays
+  --idle-timeout <DURATION>    Leave after the source was idle this long (default: 5m)
+  --silence-threshold <DBFS>   Capture sources count as playing above this level (default: -60)
   --bot-activity <TEXT>        Activity shown on the bot's profile
   --[no-]now-playing           Show the current track as the bot's activity (default: on)
 
@@ -420,6 +480,8 @@ Tools:
 
 General:
   -c, --config <PATH>          Config file (env: STDINMAN_CONFIG)
+  --socket <PATH>              Control socket for serve/ctl (default: per-user location)
+  --log-file <PATH>            Also append logs to this file
   -v, --verbose                Enable debug logging (or STDINMAN_LOG=debug)
   -V, --version                Print version
   -h, --help                   Print this help`;

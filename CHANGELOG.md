@@ -1,6 +1,22 @@
 # Changelog
 
-## 0.3.0 (2026-10-10)
+## Unreleased
+
+### Added
+
+- `stdinman serve`: a long-running mode. It doesn't exit when a source ends, restarts continuous sources (Spotify, capture) with backoff when they fail, and accepts local control commands.
+- Join rules: `--join activity` (`join = "activity"`) makes the bot join only while the source plays, and leave after `--idle-timeout` (default 5 minutes) without activity. Spotify uses librespot's playing/paused events; capture sources use an audio level threshold (`--silence-threshold`, default −60 dBFS). This works with a fixed channel or follow mode.
+- `stdinman ctl`: controls a running `serve` from the same computer through a per-user socket or named pipe. Commands: `status`, `join`, `leave`, `auto`, `channel`, `follow`, `volume`, `source`, `reload`, `stop`.
+- `stdinman service install|uninstall|status`: sets up `serve` as a systemd user service, a launchd agent, or a Windows logon task without a console window. Example files are in `contrib/`.
+- `--log-file` / `log_file` and `--socket` / `socket_path`.
+
+### Changed
+
+- Volume is applied in stdinman instead of ffmpeg, so `ctl volume` takes effect immediately without restarting anything.
+- Sources start right away instead of after the bot first joins. While the bot isn't in a channel, audio that can wait (Spotify, files, stdin) is held; live capture is dropped.
+- `--silence-threshold 50` means −50 dBFS, since `--flag -50` can't be parsed.
+
+ (2026-10-10)
 
 ### Added
 

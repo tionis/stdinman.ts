@@ -15,10 +15,12 @@ export const AUDIO_SOURCES = [
   "macos-avfoundation",
 ] as const;
 export const INPUT_FORMATS = ["f32le", "s16le", "s32le", "wav"] as const;
+export const JOIN_POLICIES = ["always", "activity"] as const;
 export const LIBRESPOT_BITRATES = [96, 160, 320] as const;
 
 export type AudioSource = (typeof AUDIO_SOURCES)[number];
 export type InputFormat = (typeof INPUT_FORMATS)[number];
+export type JoinPolicy = (typeof JOIN_POLICIES)[number];
 
 export type StdinmanConfig = {
   bot_token: string;
@@ -33,6 +35,11 @@ export type StdinmanConfig = {
   loop: boolean;
   command: string;
   follow_user_id: string;
+  join: JoinPolicy;
+  idle_timeout: string;
+  silence_threshold: number;
+  socket_path: string;
+  log_file: string;
   now_playing: boolean;
   volume: number;
   opus_bitrate: number;
@@ -61,6 +68,16 @@ export const DEFAULT_CONFIG: Readonly<StdinmanConfig> = Object.freeze({
   loop: false,
   command: "",
   follow_user_id: "",
+  // "always": join whenever there is a target; "activity": only while the source plays audio.
+  join: "always",
+  // How long the source may be inactive before the bot leaves (with join = "activity").
+  idle_timeout: "5m",
+  // Capture sources count as active above this level, in dBFS.
+  silence_threshold: -60,
+  // Control socket for `stdinman serve` / `stdinman ctl`; empty uses the default location.
+  socket_path: "",
+  // Also write logs to this file (useful for services); empty disables it.
+  log_file: "",
   now_playing: true,
   volume: 1,
   // 0 lets libopus pick its default bitrate.
@@ -152,6 +169,14 @@ export function parseConfig(text: string): ParsedConfig {
     loop: readBoolean(parsed, "loop"),
     command: readString(parsed, "command"),
     follow_user_id: readSnowflake(parsed, "follow_user_id"),
+    join: readEnum(parsed, "join", parseJoinPolicy),
+    idle_timeout: readEnum(parsed, "idle_timeout", (value) => {
+      parseDuration(value);
+      return String(value);
+    }),
+    silence_threshold: readEnum(parsed, "silence_threshold", parseSilenceThreshold),
+    socket_path: readString(parsed, "socket_path"),
+    log_file: readString(parsed, "log_file"),
     now_playing: readBoolean(parsed, "now_playing"),
     volume: readEnum(parsed, "volume", parseVolume),
     opus_bitrate: readEnum(parsed, "opus_bitrate", parseOpusBitrate),
@@ -352,4 +377,48 @@ export function parseChannels(value: unknown): number {
   }
 
   return channels;
+}
+
+export function parseJoinPolicy(value: unknown): JoinPolicy {
+  if (typeof value === "string" && (JOIN_POLICIES as readonly string[]).includes(value)) {
+    return value as JoinPolicy;
+  }
+
+  throw new ConfigError(`invalid join policy ${JSON.stringify(value)}; expected one of: ${JOIN_POLICIES.join(", ")}`);
+}
+
+const DURATION_UNITS: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 };
+
+/** Parses durations like "90", "30s", "5m", "1h30m" (plain numbers are seconds) into milliseconds. */
+export function parseDuration(value: unknown): number {
+  if (typeof value === "number" || typeof value === "bigint") {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return seconds * 1_000;
+    }
+  }
+
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (/^\d+(\.\d+)?$/.test(text)) {
+      return Number(text) * 1_000;
+    }
+
+    const parts = [...text.matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h)/g)];
+    if (parts.length > 0 && parts.map((part) => part[0]).join("") === text) {
+      return parts.reduce((total, part) => total + Number(part[1]) * DURATION_UNITS[part[2]], 0);
+    }
+  }
+
+  throw new ConfigError(`invalid duration ${JSON.stringify(String(value))}; use e.g. 30s, 5m or 1h`);
+}
+
+/** Silence threshold in dBFS. Levels are never positive, so "50" means -50 (avoids "--flag -50" parsing trouble). */
+export function parseSilenceThreshold(value: unknown): number {
+  const threshold = -Math.abs(toNumber(value));
+  if (!Number.isFinite(threshold) || threshold < -120) {
+    throw new ConfigError(`invalid silence threshold ${JSON.stringify(String(value))}; expected dBFS between -120 and 0`);
+  }
+
+  return threshold;
 }

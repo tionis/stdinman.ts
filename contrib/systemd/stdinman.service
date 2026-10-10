@@ -1,0 +1,16 @@
+# Example systemd user unit; `stdinman service install` writes one with your paths.
+# Copy to ~/.config/systemd/user/ and run: systemctl --user enable --now stdinman
+[Unit]
+Description=stdinman: stream audio from this computer into Discord
+After=network-online.target pipewire.service pipewire-pulse.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/stdinman serve
+Restart=on-failure
+RestartSec=10
+# The PATH from installation, so ffmpeg, librespot and pw-record are found.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

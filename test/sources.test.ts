@@ -26,33 +26,30 @@ async function collect(stream: Readable): Promise<Buffer> {
 
 describe("argument builders", () => {
   test("ffmpeg opus args include optional filters only when set", () => {
-    const plain = ffmpegOpusArgs(PCM_SPEC, { volume: 1, opusBitrate: 0 }, false);
+    const plain = ffmpegOpusArgs(PCM_SPEC, { opusBitrate: 0 }, false);
     expect(plain).not.toContain("-af");
     expect(plain).not.toContain("-b:a");
     expect(plain.slice(-3)).toEqual(["-f", "ogg", "pipe:1"]);
 
-    const tuned = ffmpegOpusArgs(PCM_SPEC, { volume: 0.5, opusBitrate: 96 }, false);
-    expect(tuned).toContain("volume=0.5");
+    const tuned = ffmpegOpusArgs(PCM_SPEC, { opusBitrate: 96 }, false);
     expect(tuned[tuned.indexOf("-b:a") + 1]).toBe("96k");
   });
 
   test("WAV input lets ffmpeg read the format from the header", () => {
-    const args = ffmpegOpusArgs({ ...PCM_SPEC, format: "wav" }, { volume: 1, opusBitrate: 0 }, false);
+    const args = ffmpegOpusArgs({ ...PCM_SPEC, format: "wav" }, { opusBitrate: 0 }, false);
     const input = args.slice(0, args.indexOf("pipe:0"));
     expect(input).toContain("wav");
     expect(input).toContain("-ignore_length");
     expect(input).not.toContain("-ar");
   });
 
-  test("volume and custom filters share one filter chain", () => {
-    const args = ffmpegOpusArgs(PCM_SPEC, { volume: 2, opusBitrate: 0, audioFilter: "bass=g=3" }, false);
-    expect(args[args.indexOf("-af") + 1]).toBe("volume=2,bass=g=3");
-    const onlyFilter = ffmpegOpusArgs(PCM_SPEC, { volume: 1, opusBitrate: 0, audioFilter: "loudnorm" }, false);
+  test("custom audio filters", () => {
+    const onlyFilter = ffmpegOpusArgs(PCM_SPEC, { opusBitrate: 0, audioFilter: "loudnorm" }, false);
     expect(onlyFilter[onlyFilter.indexOf("-af") + 1]).toBe("loudnorm");
   });
 
   test("ffmpeg log level follows debug mode", () => {
-    const args = ffmpegOpusArgs(PCM_SPEC, { volume: 1, opusBitrate: 0 }, true);
+    const args = ffmpegOpusArgs(PCM_SPEC, { opusBitrate: 0 }, true);
     expect(args[args.indexOf("-loglevel") + 1]).toBe("warning");
   });
 
@@ -65,8 +62,8 @@ describe("argument builders", () => {
 });
 
 test("PCM layouts", () => {
-  expect(pcmLayout({ ...PCM_SPEC, format: "f32le", sampleRate: 44_100 })).toEqual({ bytesPerSecond: 44_100 * 8, frameBytes: 8 });
-  expect(pcmLayout({ ...PCM_SPEC, channels: 1 })).toEqual({ bytesPerSecond: 48_000 * 2, frameBytes: 2 });
+  expect(pcmLayout({ ...PCM_SPEC, format: "f32le", sampleRate: 44_100 })).toEqual({ bytesPerSecond: 44_100 * 8, frameBytes: 8, sample: "f32" });
+  expect(pcmLayout({ ...PCM_SPEC, channels: 1 })).toEqual({ bytesPerSecond: 48_000 * 2, frameBytes: 2, sample: "s16" });
   expect(pcmLayout({ ...PCM_SPEC, format: "wav" })).toBe("wav");
 });
 
@@ -125,6 +122,8 @@ describe("process audio source", () => {
       startedMessage: "test source started",
       logPrefix: "test",
       awaitInitialPlayback: false,
+      activity: "running",
+      continuous: false,
     });
 
   test("forwards child stdout", async () => {
@@ -153,6 +152,8 @@ describe("process audio source", () => {
       startedMessage: "",
       logPrefix: "missing",
       awaitInitialPlayback: false,
+      activity: "running",
+      continuous: false,
     });
     source.start();
     const failure = await new Promise<Error>((resolve) => source.stream.once("error", resolve));
@@ -163,7 +164,7 @@ describe("process audio source", () => {
 describe.skipIf(!hasFfmpeg)("ffmpeg transcoder", () => {
   test("encodes raw PCM into Ogg Opus and exits cleanly at end of input", async () => {
     const input = new PassThrough();
-    const transcoder = createFfmpegOpusStream("ffmpeg", input, PCM_SPEC, { volume: 0.8, opusBitrate: 64 });
+    const transcoder = createFfmpegOpusStream("ffmpeg", input, PCM_SPEC, { opusBitrate: 64 });
     const errors: Error[] = [];
     transcoder.events.on("error", (transcodeError) => errors.push(transcodeError));
 
@@ -189,7 +190,7 @@ describe.skipIf(!hasFfmpeg)("ffmpeg transcoder", () => {
 
   test("streams live input without waiting for more data", async () => {
     const input = new PassThrough();
-    const transcoder = createFfmpegOpusStream("ffmpeg", input, PCM_SPEC, { volume: 1, opusBitrate: 0 });
+    const transcoder = createFfmpegOpusStream("ffmpeg", input, PCM_SPEC, { opusBitrate: 0 });
     // 0.3 s of silence and the stream stays open, like a live capture.
     input.write(Buffer.alloc(48_000 * 4 * 0.3));
     const firstAudioPage = await new Promise<Buffer>((resolve, reject) => {
@@ -211,7 +212,7 @@ describe.skipIf(!hasFfmpeg)("ffmpeg transcoder", () => {
   test("reads WAV input", async () => {
     const wav = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=duration=0.5", "-ar", "44100", "-ac", "1", "-f", "wav", "pipe:1"]);
     const input = new PassThrough();
-    const transcoder = createFfmpegOpusStream("ffmpeg", input, { ...PCM_SPEC, format: "wav" }, { volume: 1, opusBitrate: 0 });
+    const transcoder = createFfmpegOpusStream("ffmpeg", input, { ...PCM_SPEC, format: "wav" }, { opusBitrate: 0 });
     const output = collect(transcoder.stream);
     input.end(wav.stdout);
     const ogg = await output;
@@ -220,7 +221,6 @@ describe.skipIf(!hasFfmpeg)("ffmpeg transcoder", () => {
 
   test("reports ffmpeg failures with stderr context", async () => {
     const crash = createFfmpegOpusStream("ffmpeg", new PassThrough(), { ...PCM_SPEC, sampleRate: -1 }, {
-      volume: 1,
       opusBitrate: 0,
     });
     crash.stream.resume();
@@ -231,7 +231,6 @@ describe.skipIf(!hasFfmpeg)("ffmpeg transcoder", () => {
 
   test("missing ffmpeg binary is reported", async () => {
     const transcoder = createFfmpegOpusStream("stdinman-definitely-missing-binary", new PassThrough(), PCM_SPEC, {
-      volume: 1,
       opusBitrate: 0,
     });
     const failure = await new Promise<Error>((resolve) => transcoder.events.once("error", resolve));

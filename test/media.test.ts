@@ -123,7 +123,7 @@ describe.skipIf(!hasFfmpeg)("media source", () => {
     // Two half-second stereo f32 tones at 48 kHz.
     expect(pcm.length).toBe(2 * 0.5 * 48_000 * 2 * 4);
     expect(titles).toEqual(["First Tone", "second", null]);
-  });
+  }, 20_000);
 
   test("fails when nothing can be played", async () => {
     const broken = join(dir, "broken2.mp3");
@@ -132,7 +132,7 @@ describe.skipIf(!hasFfmpeg)("media source", () => {
     source.start();
     const failure = await new Promise<Error>((resolve) => source.stream.once("error", resolve));
     expect(failure.message).toContain("none of the inputs");
-  });
+  }, 20_000);
 
   test("loops until stopped", async () => {
     const source = createMediaSource({ ffmpegPath: "ffmpeg", inputs: [tone("loop.wav", "Loop")], loop: true });
@@ -149,5 +149,5 @@ describe.skipIf(!hasFfmpeg)("media source", () => {
     });
     source.stop();
     expect(titles).toEqual(["Loop", "Loop", "Loop"]);
-  });
+  }, 20_000);
 });

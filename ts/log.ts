@@ -1,4 +1,19 @@
+import { type WriteStream, createWriteStream, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+
+let logFile: WriteStream | undefined;
+
+/** Also append every log line to `path` (for services without a journal). */
+export function setLogFile(path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  logFile = createWriteStream(path, { flags: "a" });
+  logFile.on("error", (fileError) => {
+    logFile = undefined;
+    console.error(`cannot write log file ${path}: ${fileError.message}`);
+  });
+}
 
 const LOGGER_NAME = "stdinman.ts";
 
@@ -19,6 +34,7 @@ export function isDebugEnabled(): boolean {
 
 export function log(level: LogLevel, message: string): void {
   const line = `[${new Date().toISOString()}] ${level} ${LOGGER_NAME} ${message}`;
+  logFile?.write(`${line}\n`);
   if (level === "ERROR" || level === "WARN") {
     console.error(line);
   } else {

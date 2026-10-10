@@ -16,6 +16,7 @@ export type FfmpegInputSpec = {
 };
 
 export type NowPlayingEvents = { change: [title: string | null] };
+export type ActivityEvents = { change: [active: boolean] };
 
 export type PreparedAudioSource = {
   stream: Readable;
@@ -28,6 +29,16 @@ export type PreparedAudioSource = {
   nowPlaying?: EventEmitter<NowPlayingEvents>;
   /** Pause (rather than discard) audio while the bot is not in a channel. For finite media. */
   pauseWhenUnheard?: boolean;
+  /**
+   * How to tell whether the source is playing (for join = "activity"):
+   * - "events": the source reports it via `activityEvents` (Spotify playing/paused);
+   * - "level": audio above the silence threshold (live capture, which delivers silence too);
+   * - "running": active as long as the source runs (stdin, command, media).
+   */
+  activity: "events" | "level" | "running";
+  activityEvents?: EventEmitter<ActivityEvents>;
+  /** A source that should run indefinitely; `serve` restarts it if it ends. */
+  continuous: boolean;
   /**
    * How audio is kept in step with playback (see pacer.ts): "wait" for sources that can
    * run faster than real time, "drop" for live capture whose clock drifts. Unset: unpaced.
@@ -44,7 +55,8 @@ export function pcmLayout(spec: FfmpegInputSpec): PcmLayout | "wav" {
   }
 
   const frameBytes = BYTES_PER_SAMPLE[spec.format] * spec.channels;
-  return { bytesPerSecond: frameBytes * spec.sampleRate, frameBytes };
+  const sample = ({ f32le: "f32", s16le: "s16", s32le: "s32" } as const)[spec.format];
+  return { bytesPerSecond: frameBytes * spec.sampleRate, frameBytes, sample };
 }
 
 export const CAPTURE_SAMPLE_RATE = 48_000;
@@ -135,6 +147,8 @@ export function createSwitchingStdinStream(
     awaitInitialPlayback: true,
     // stdin may carry a file (faster than real time) or a live stream; waiting suits both.
     pacing: "wait",
+    activity: "running",
+    continuous: false,
   };
 }
 
@@ -160,6 +174,9 @@ export function createProcessAudioSource(options: {
   /** Called once the source has stopped or failed, e.g. to remove temporary files. */
   cleanup?: () => void;
   pacing?: PacingMode;
+  activity: PreparedAudioSource["activity"];
+  activityEvents?: EventEmitter<ActivityEvents>;
+  continuous: boolean;
   /** Read stdout through a FIFO for real backpressure (for producers faster than real time). */
   useFifo?: boolean;
 }): PreparedAudioSource {
@@ -182,6 +199,9 @@ export function createProcessAudioSource(options: {
     ffmpegInput: options.ffmpegInput,
     nowPlaying: options.nowPlaying,
     pacing: options.pacing,
+    activity: options.activity,
+    activityEvents: options.activityEvents,
+    continuous: options.continuous,
     start: (): void => {
       if (child || stopping) {
         return;
@@ -277,6 +297,8 @@ export function createPulseMonitorSource(options: { parecPath: string; audioDevi
     logPrefix: "parec",
     awaitInitialPlayback: false,
     pacing: "drop",
+    activity: "level",
+    continuous: true,
   });
 }
 
@@ -327,6 +349,8 @@ export function createWindowsDshowSource(options: { ffmpegPath: string; audioDev
     logPrefix: "ffmpeg-dshow",
     awaitInitialPlayback: false,
     pacing: "drop",
+    activity: "level",
+    continuous: true,
   });
 }
 
@@ -352,6 +376,8 @@ export function createCommandSource(options: {
     awaitInitialPlayback: false,
     // The command may be a file decoder (faster than real time) or a live recorder; waiting suits both.
     pacing: "wait",
+    activity: "running",
+    continuous: false,
     useFifo: true,
   });
 }
@@ -418,22 +444,19 @@ export function createAvfoundationSource(options: { ffmpegPath: string; audioDev
     logPrefix: "ffmpeg-avfoundation",
     awaitInitialPlayback: false,
     pacing: "drop",
+    activity: "level",
+    continuous: true,
   });
 }
 
 export type TranscodeOptions = {
-  volume: number;
   opusBitrate: number;
-  /** Extra ffmpeg audio filter chain, e.g. "bass=g=3". */
+  /** Extra ffmpeg audio filter chain, e.g. "bass=g=3". Volume is applied before ffmpeg (see pacer.ts). */
   audioFilter?: string;
 };
 
 function audioFilterArgs(options: TranscodeOptions): string[] {
-  const filters = [
-    ...(options.volume !== 1 ? [`volume=${options.volume}`] : []),
-    ...(options.audioFilter ? [options.audioFilter] : []),
-  ];
-  return filters.length > 0 ? ["-af", filters.join(",")] : [];
+  return options.audioFilter ? ["-af", options.audioFilter] : [];
 }
 
 export function ffmpegOpusArgs(

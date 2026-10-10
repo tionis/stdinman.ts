@@ -34,6 +34,19 @@ describe("parseCli", () => {
     expect(parseCli(argv).command.kind as string).toBe(kind);
   });
 
+  test("ctl forwards everything after it", () => {
+    const parsed = parseCli(["-c", "x.toml", "ctl", "source", "media", "-i", "a.mp3", "--loop"]);
+    expect(parsed.command).toEqual({ kind: "ctl", args: ["source", "media", "-i", "a.mp3", "--loop"] });
+    expect(parsed.values.config).toBe("x.toml");
+    expect(parseCli(["ctl"]).command).toEqual({ kind: "ctl", args: [] });
+  });
+
+  test("serve and service commands", () => {
+    expect(parseCli(["serve", "--join", "activity"]).command.kind).toBe("serve");
+    expect(parseCli(["service", "install"]).command).toEqual({ kind: "service", action: "install" });
+    expect(() => parseCli(["service"])).toThrow(/install\|uninstall\|status/);
+  });
+
   test("unknown commands and flags are usage errors", () => {
     expect(() => parseCli(["play"])).toThrow(UsageError);
     expect(() => parseCli(["--nope"])).toThrow(UsageError);
@@ -87,6 +100,25 @@ describe("resolveSettings", () => {
 
   test("input format applies to stdin", () => {
     expect(resolve(["--input-format", "s16le"]).settings.inputFormat).toBe("s16le");
+  });
+});
+
+describe("join rules", () => {
+  test("defaults and flags", () => {
+    expect(resolve([]).settings).toMatchObject({ join: "always", idleTimeoutMs: 300_000, silenceThresholdDb: -60 });
+    expect(resolve(["--join", "activity", "--idle-timeout", "90s", "--silence-threshold", "50"]).settings).toMatchObject({
+      join: "activity",
+      idleTimeoutMs: 90_000,
+      silenceThresholdDb: -50,
+    });
+    expect(() => resolve(["--join", "sometimes"])).toThrow(/--join/);
+    expect(() => resolve(["--idle-timeout", "soon"])).toThrow(/--idle-timeout/);
+  });
+
+  test("serve may start without a voice target", () => {
+    const settings = resolve(["--bot-token", "t"]).settings;
+    expect(() => validateRunSettings(settings, "cfg", "linux", { requireVoiceTarget: false })).not.toThrow();
+    expect(() => validateRunSettings(settings, "cfg", "linux")).toThrow(/voice channel/);
   });
 });
 

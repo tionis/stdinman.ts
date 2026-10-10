@@ -8,6 +8,7 @@ import {
   loadConfig,
   parseConfig,
   parseLibrespotBitrate,
+  parseDuration,
   parseOpusBitrate,
   parseVolume,
   renderDefaultConfig,
@@ -102,6 +103,24 @@ audio_filter = "bass=g=3"
   ])("rejects invalid value %p", (text, message) => {
     expect(() => parseConfig(text)).toThrow(ConfigError);
     expect(() => parseConfig(text)).toThrow(message);
+  });
+});
+
+describe("durations", () => {
+  test.each([
+    ["90", 90_000],
+    [90, 90_000],
+    ["30s", 30_000],
+    ["5m", 300_000],
+    ["1h30m", 5_400_000],
+    ["250ms", 250],
+    ["0", 0],
+  ])("%p -> %p ms", (input, expected) => {
+    expect(parseDuration(input)).toBe(expected);
+  });
+
+  test.each(["", "5 minutes", "-1", "m5", "5x"])("rejects %p", (input) => {
+    expect(() => parseDuration(input)).toThrow(/duration/);
   });
 });
 

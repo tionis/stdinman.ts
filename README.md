@@ -123,7 +123,54 @@ With `--follow-user <USER_ID>` (or `follow_user_id` in the config), the bot foll
 - it moves along when they switch channels or servers;
 - it leaves when they leave voice, and joins again when they come back.
 
-Streaming starts the first time the bot joins. After that, live sources keep running while the bot is out of voice, and that audio is simply not sent. The `media` source pauses instead and continues where it left off. Channels where the bot lacks permissions are skipped, with a warning.
+While the bot is out of voice, sources that can wait (Spotify, `media`, stdin, `command`) are held and continue where they left off when it rejoins. Live capture keeps running and what nobody heard is dropped. Channels where the bot lacks permissions are skipped, with a warning.
+
+## Background Operation
+
+`stdinman serve` runs stdinman as a long-lived process. It doesn't exit when a source ends; continuous sources (Spotify, capture) are restarted if they fail. It joins and leaves voice by rules, and you control it from your computer with `stdinman ctl`, not through Discord.
+
+**Join rules** (`--join`, `join` in the config) decide when the bot is in voice. They combine with a fixed channel or follow mode:
+
+- `always` (default): whenever there is a target, i.e. always for a fixed channel, and whenever the followed user is in voice.
+- `activity`: only while the source plays, and until it has been idle for `--idle-timeout` (default `5m`). How playback is detected:
+  - **Spotify**: librespot's playing/paused events.
+  - **Capture sources**: audio above `--silence-threshold` (default −60 dBFS).
+  - **stdin, `command`, `media`**: active while they run.
+
+For example, with `stdinman serve --spotify --follow-user <you> --join activity`, the bot shows up in your channel when you press play in Spotify. It leaves five minutes after you pause. The beginning of the song waits until the bot has joined.
+
+**Local control** of a running instance:
+
+```text
+stdinman ctl status                       What it is doing: source, track, voice, rules
+stdinman ctl join [CHANNEL_ID]            Join now (ignores the rules until "ctl auto")
+stdinman ctl leave                        Leave and stay out (until "ctl auto")
+stdinman ctl auto                         Back to the join rules
+stdinman ctl channel CHANNEL_ID           Switch to a fixed channel
+stdinman ctl follow USER_ID               Switch to following a user
+stdinman ctl volume [FACTOR]              Show or change the volume, instantly
+stdinman ctl source SOURCE [OPTIONS]      Switch source, e.g. ctl source media -i ~/Music --loop
+stdinman ctl reload                       Re-read the config file (drops ctl changes)
+stdinman ctl stop                         Shut down
+```
+
+`ctl` talks to `serve` over a socket only your user can use: `$XDG_RUNTIME_DIR/stdinman.sock` on Linux, a per-user temp socket on macOS, or the `\\.\pipe\stdinman-<user>` named pipe on Windows. `--socket` (or `socket_path`) picks another location, for example to run several instances.
+
+**As a service**, started at login:
+
+```bash
+stdinman service install     # systemd user unit, launchd agent, or a Windows logon task
+stdinman service status
+stdinman service uninstall
+```
+
+The service runs `stdinman serve` with the same program you ran `service install` with (the standalone binary, or Node/Bun with the script), plus `--config` if you passed one. Put your settings in the config file.
+
+- **Linux**: logs go to `journalctl --user -u stdinman`. To keep the service running while you're logged out, run `loginctl enable-linger`.
+- **macOS**: logs go to `~/Library/Logs/stdinman.log`.
+- **Windows**: logs go to `%LOCALAPPDATA%\stdinman\stdinman.log`. The task runs without a console window.
+
+If you'd rather set it up by hand, there are example files in [`contrib/`](contrib/).
 
 ## Now Playing
 
@@ -155,7 +202,11 @@ stdinman --audio-filter "bass=g=3,treble=g=1.5" --opus-bitrate 128
 ## Commands
 
 ```text
-stdinman [OPTIONS]                 Join the voice channel and start streaming
+stdinman [OPTIONS]                 Join the voice channel and stream until the source ends
+stdinman serve [OPTIONS]           Run in the background with join rules and ctl commands
+stdinman ctl COMMAND [ARGS]        Control a running serve instance
+stdinman service install|uninstall|status
+                                   Run serve as a user service
 stdinman devices list [--source S] List capture devices for a source
 stdinman doctor [OPTIONS]          Check config and external tools
 stdinman config path               Print the config file location
@@ -192,6 +243,11 @@ stdinman config init               Create the config file if it does not exist
 | `--parec-path <PATH>`        | `parec_path`        | parec binary                                                         |
 | `--pactl-path <PATH>`        | `pactl_path`        | pactl binary                                                         |
 | `--powershell-path <PATH>`   | `powershell_path`   | PowerShell used by `windows-loopback` (default `powershell.exe`)     |
+| `--join <always\|activity>`  | `join`              | When to be in voice (see [Background Operation](#background-operation)) |
+| `--idle-timeout <DURATION>`  | `idle_timeout`      | Leave after this long without activity, e.g. `30s`, `5m` (default `5m`) |
+| `--silence-threshold <DBFS>` | `silence_threshold` | Level above which capture counts as playing (default `-60`)          |
+| `--socket <PATH>`            | `socket_path`       | Control socket for `serve` / `ctl`                                   |
+| `--log-file <PATH>`          | `log_file`          | Also append logs to this file                                        |
 | `-c, --config <PATH>`        |                     | Config file (env: `STDINMAN_CONFIG`)                                 |
 | `-v, --verbose`              |                     | Debug logging (or `STDINMAN_LOG=debug`)                              |
 
@@ -207,6 +263,8 @@ voice_channel_id = "123456789012345678"   # quote IDs
 follow_user_id = ""                       # set this instead to follow a user
 bot_activity = "stdinman"
 now_playing = true
+join = "always"                           # or "activity": only while the source plays
+idle_timeout = "5m"
 audio_source = "media"
 audio_device = ""
 inputs = ["~/Music/playlist", "https://radio.example/stream.mp3"]
@@ -226,8 +284,8 @@ Tool paths (`ffmpeg_path`, `pw_record_path`, `parec_path`, `pactl_path`, `powers
 
 ## Behavior Notes
 
-- **When streaming starts**: audio streaming starts once the bot first joins a channel. With `stdin`, audio that arrives before that is dropped, so live streams start in sync. When you pipe a file, use `ffmpeg -re` so it plays in real time.
-- **When it ends**: when the source ends (stdin EOF, the command exits successfully, the last `media` input finishes without `--loop`), the bot disconnects and exits.
+- **When streaming starts**: sources start right away. Until the bot is in a channel, audio that can wait (stdin, `command`, `media`, Spotify) is held, and live capture is dropped.
+- **When it ends**: when the source ends (stdin EOF, the command exits successfully, the last `media` input finishes without `--loop`), the bot disconnects and exits. `serve` keeps running instead and waits for `ctl source` or `ctl reload`.
 - **Silence**: gaps in a live source (for example, Spotify paused, or nothing playing on Windows) are sent as silence. They do not end the session.
 - **PipeWire applications**: `-d <name>` first looks for a device with that name or description. Otherwise it is treated as an application name (e.g. `Firefox`, `spotify`, `mpv`). stdinman waits for that application to play, and re-attaches whenever it starts a new stream.
 - **Reconnection**: voice connection failures are retried with exponential backoff (up to 30 s). The audio source and transcoder keep running.

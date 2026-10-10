@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { debug, warn } from "./log.ts";
-import { type NowPlayingEvents, type PreparedAudioSource, createProcessAudioSource } from "./sources.ts";
+import {
+  type ActivityEvents,
+  type NowPlayingEvents,
+  type PreparedAudioSource,
+  createProcessAudioSource,
+} from "./sources.ts";
 
 const EVENT_MARKER = "STDINMAN_EVENT";
 const FIELD_SEPARATOR = "\u001f";
@@ -138,7 +143,10 @@ export function formatTrackTitle(event: LibrespotEvent): string | null {
 export class SpotifyNowPlayingTracker {
   private currentTitle: string | null = null;
 
-  constructor(private readonly emitter: EventEmitter<NowPlayingEvents>) {}
+  constructor(
+    private readonly emitter: EventEmitter<NowPlayingEvents>,
+    private readonly activity?: EventEmitter<ActivityEvents>,
+  ) {}
 
   handle(event: LibrespotEvent): void {
     switch (event.event) {
@@ -148,11 +156,13 @@ export class SpotifyNowPlayingTracker {
         return;
       case "playing":
         this.emitter.emit("change", this.currentTitle);
+        this.activity?.emit("change", true);
         return;
       case "paused":
       case "stopped":
       case "session_disconnected":
         this.emitter.emit("change", null);
+        this.activity?.emit("change", false);
         return;
       default:
         return;
@@ -184,10 +194,13 @@ export function createSpotifySource(options: {
   nowPlaying: boolean;
 }): PreparedAudioSource {
   validateLibrespotArgs(options.librespotArgs);
-  const trackEvents = options.nowPlaying && !userSetsOnEvent(options.librespotArgs);
+  // The hook reports track changes (now playing) and playing/paused (activity); a user-supplied
+  // --onevent replaces it, and then neither is available.
+  const trackEvents = !userSetsOnEvent(options.librespotArgs);
   const hook = trackEvents ? writeOnEventScript() : undefined;
   const nowPlaying = new EventEmitter<NowPlayingEvents>();
-  const tracker = new SpotifyNowPlayingTracker(nowPlaying);
+  const activityEvents = new EventEmitter<ActivityEvents>();
+  const tracker = new SpotifyNowPlayingTracker(nowPlaying, activityEvents);
   const seenWarnings = new Set<string>();
 
   return createProcessAudioSource({
@@ -229,7 +242,10 @@ export function createSpotifySource(options: {
       tracker.handle(event);
       return true;
     },
-    nowPlaying: trackEvents ? nowPlaying : undefined,
+    nowPlaying: trackEvents && options.nowPlaying ? nowPlaying : undefined,
+    activity: trackEvents ? "events" : "running",
+    activityEvents: trackEvents ? activityEvents : undefined,
+    continuous: true,
     cleanup: hook?.remove,
   });
 }

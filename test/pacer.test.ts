@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { PassThrough, Readable } from "node:stream";
-import { createPacer, parseWavHeader } from "../ts/pacer.ts";
+import { applyGain, createPacer, parseWavHeader, peakLevel } from "../ts/pacer.ts";
 
 // 1 byte = 1 ms of audio, with 2-byte frames.
-const LAYOUT = { bytesPerSecond: 1_000, frameBytes: 2 };
+const LAYOUT = { bytesPerSecond: 1_000, frameBytes: 2, sample: "unknown" as const };
 const settle = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 const chunks = (count: number, size: number) =>
   Readable.from(Array.from({ length: count }, () => Buffer.alloc(size)), { objectMode: false });
@@ -147,7 +147,10 @@ describe("jitter cushion", () => {
 
 describe("WAV input", () => {
   test("parses headers with extra chunks", () => {
-    expect(parseWavHeader(wavHeader(384_000, 8))).toEqual({ headerBytes: 44, layout: { bytesPerSecond: 384_000, frameBytes: 8 } });
+    expect(parseWavHeader(wavHeader(384_000, 8))).toEqual({
+      headerBytes: 44,
+      layout: { bytesPerSecond: 384_000, frameBytes: 8, sample: "f32" },
+    });
     expect(parseWavHeader(wavHeader(384_000, 8, true))?.headerBytes).toBe(56);
     expect(parseWavHeader(wavHeader(384_000, 8).subarray(0, 30))).toBeUndefined();
     expect(() => parseWavHeader(Buffer.from("not a wav file at all"))).toThrow(/RIFF/);
@@ -179,5 +182,72 @@ describe("WAV input", () => {
     await settle();
     expect(out.bytes).toBe(27);
     expect(reasons[0]).toMatch(/RIFF/);
+  });
+});
+
+describe("gain and levels", () => {
+  const f32 = (...values: number[]) => {
+    const buffer = Buffer.alloc(values.length * 4);
+    values.forEach((value, index) => buffer.writeFloatLE(value, index * 4));
+    return buffer;
+  };
+  const s16 = (...values: number[]) => {
+    const buffer = Buffer.alloc(values.length * 2);
+    values.forEach((value, index) => buffer.writeInt16LE(value, index * 2));
+    return buffer;
+  };
+
+  test("peak levels per sample format", () => {
+    expect(peakLevel(f32(0.1, -0.5, 0.25), "f32")).toBeCloseTo(0.5);
+    expect(peakLevel(s16(1_000, -16_384), "s16")).toBeCloseTo(0.5);
+    expect(peakLevel(Buffer.from([0x00, 0x00, 0x40]), "s24")).toBeCloseTo(0.5);
+  });
+
+  test("gain scales samples and clips integers", () => {
+    const louder = applyGain(f32(0.25, -0.5), "f32", 2);
+    expect(louder.readFloatLE(0)).toBeCloseTo(0.5);
+    expect(louder.readFloatLE(4)).toBeCloseTo(-1);
+    const clipped = applyGain(s16(20_000, -20_000), "s16", 2);
+    expect(clipped.readInt16LE(0)).toBe(32_767);
+    expect(clipped.readInt16LE(2)).toBe(-32_768);
+    const original = s16(100);
+    expect(applyGain(original, "s16", 1)).toBe(original);
+  });
+
+  test("the pacer applies a changing gain to whole samples across chunk boundaries", async () => {
+    let gain = 2;
+    const input = new PassThrough();
+    const levels: number[] = [];
+    const out = counter(
+      createPacer(input, {
+        mode: "drop",
+        layout: { bytesPerSecond: 4_000, frameBytes: 4, sample: "s16" },
+        playedMs: () => 1,
+        cushionMs: 0,
+        gain: () => gain,
+        onLevel: (peak) => levels.push(peak),
+      }),
+    );
+    const samples = s16(1_000, 2_000, 3_000, 4_000);
+    // Split in the middle of a sample.
+    input.write(samples.subarray(0, 3));
+    input.write(samples.subarray(3, 6));
+    await settle(20);
+    gain = 0.5;
+    input.write(samples.subarray(6));
+    await settle(20);
+    const result = Buffer.concat(out.data);
+    expect([0, 2, 4, 6].map((offset) => result.readInt16LE(offset))).toEqual([2_000, 4_000, 6_000, 2_000]);
+    expect(levels.length).toBeGreaterThan(0);
+  });
+
+  test("WAV sample formats", () => {
+    const pcm16 = wavHeader(192_000, 4);
+    pcm16.writeUInt16LE(1, 20);
+    pcm16.writeUInt16LE(16, 34);
+    expect(parseWavHeader(pcm16)?.layout.sample).toBe("s16");
+    const unknown = wavHeader(192_000, 4);
+    unknown.writeUInt16LE(2, 20); // ADPCM
+    expect(parseWavHeader(unknown)?.layout.sample).toBe("unknown");
   });
 });
