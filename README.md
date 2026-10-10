@@ -236,7 +236,6 @@ Tool paths (`ffmpeg_path`, `pw_record_path`, `parec_path`, `pactl_path`, `powers
 - **Jitter buffer**: live capture is buffered by about 150 ms, so timing jitter doesn't cause audible gaps.
 - **Node vs. Bun**: Node gives the steadiest timing. Under Bun, which includes the standalone binaries, reading child processes occasionally stalls the event loop for 40–120 ms on a busy machine. The jitter buffer and the playback lead absorb most of that.
 - **Clock drift**: a capture device's clock never runs at exactly the same speed as the computer's clock, which paces playback. To keep latency from growing during long sessions, live capture sources drop about 150–250 ms of audio whenever more than 400 ms has built up. With typical hardware that happens every 25 minutes to 2 hours, and is logged.
-- **Spotify on Windows**: Bun, which the standalone binaries are built on, reads child process output without backpressure, and Windows has no FIFOs to work around it. With the Windows binary, librespot runs far ahead of playback, so pausing and skipping lag behind. Install via npm and run under Node for Spotify on Windows.
 - **Spotify volume**: librespot starts at 100% volume (librespot's own default of 50% is −30 dB on its log curve) and outputs 32-bit float. The Spotify app's volume slider still controls it. Pass `--librespot-arg --initial-volume --librespot-arg 70` to start lower.
 - **Exit codes**: `0` for a normal end, `1` for runtime errors, `2` for usage or config errors.
 

@@ -88,7 +88,7 @@ async function listAudioFiles(dir: string): Promise<string[]> {
   return files;
 }
 
-export function mediaDecodeArgs(input: string, platform: NodeJS.Platform = process.platform): string[] {
+export function mediaDecodeArgs(input: string): string[] {
   return [
     "-hide_banner",
     "-nostdin",
@@ -96,8 +96,6 @@ export function mediaDecodeArgs(input: string, platform: NodeJS.Platform = proce
     // "info" is needed for the input metadata dump used for now-playing titles.
     "-loglevel",
     "info",
-    // Windows has no FIFOs to hold the decoder back (see fifo.ts), so read at native speed there.
-    ...(platform === "win32" ? ["-re"] : []),
     ...(isUrl(input) ? ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"] : []),
     "-i",
     input,

@@ -2,7 +2,9 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { closeSync, constants, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { randomBytes } from "node:crypto";
+import { createServer } from "node:net";
+import { PassThrough, Readable } from "node:stream";
 import { trackChild } from "./children.ts";
 import { debug } from "./log.ts";
 
@@ -102,37 +104,14 @@ export function spawnPiped(command: string, args: string[], options: SpawnOption
  * Spawns a process whose stdout is read with real backpressure. Uses a FIFO
  * where available (Linux, macOS) and a normal pipe elsewhere.
  */
-export function spawnWithBackpressure(command: string, args: string[], options: SpawnOptions = {}): ChildWithStdout {
-  if (process.platform === "win32") {
-    return spawnPiped(command, args, options);
-  }
-
-  const fifo = createFifo();
-  if (!fifo) {
-    return spawnPiped(command, args, options);
-  }
-
-  let readFd: number | undefined;
-  let writeFd: number | undefined;
-  try {
-    // Opening the read end non-blocking succeeds without a writer; the write end then opens immediately.
-    readFd = openSync(fifo.path, constants.O_RDONLY | constants.O_NONBLOCK);
-    writeFd = openSync(fifo.path, constants.O_WRONLY);
-  } catch (openError) {
-    for (const fd of [readFd, writeFd]) {
-      if (fd !== undefined) {
-        closeSync(fd);
-      }
-    }
-    fifo.remove();
-    debug(`opening the FIFO failed (${String(openError)}); falling back to a normal pipe`);
-    return spawnPiped(command, args, options);
-  } finally {
-    // Both ends are open (or failed); the path is no longer needed.
-    fifo.remove();
-  }
-
-  const stdout = new FifoReadable(readFd);
+/** Spawns `command` writing into `writeFd` and reports exit only once `stdout` has been fully read. */
+function spawnIntoHandle(
+  command: string,
+  args: string[],
+  options: SpawnOptions,
+  writeFd: number,
+  stdout: Readable,
+): ChildWithStdout {
   const child = trackChild(spawn(command, args, { ...options, stdio: ["ignore", writeFd, "pipe"] }));
   // The child holds its own copy; keeping ours open would prevent end-of-file.
   closeSync(writeFd);
@@ -148,14 +127,12 @@ export function spawnWithBackpressure(command: string, args: string[], options: 
     }
   };
 
-  stdout.once("end", () => {
+  const markDrained = (): void => {
     drained = true;
     notify();
-  });
-  stdout.once("close", () => {
-    drained = true;
-    notify();
-  });
+  };
+  stdout.once("end", markDrained);
+  stdout.once("close", markDrained);
   child.once("close", (code, signal) => {
     exit = { code, signal };
     notify();
@@ -173,4 +150,77 @@ export function spawnWithBackpressure(command: string, args: string[], options: 
       notify();
     },
   };
+}
+
+function spawnWithFifo(command: string, args: string[], options: SpawnOptions): ChildWithStdout | undefined {
+  const fifo = createFifo();
+  if (!fifo) {
+    return undefined;
+  }
+
+  let readFd: number | undefined;
+  let writeFd: number | undefined;
+  try {
+    // Opening the read end non-blocking succeeds without a writer; the write end then opens immediately.
+    readFd = openSync(fifo.path, constants.O_RDONLY | constants.O_NONBLOCK);
+    writeFd = openSync(fifo.path, constants.O_WRONLY);
+  } catch (openError) {
+    for (const fd of [readFd, writeFd]) {
+      if (fd !== undefined) {
+        closeSync(fd);
+      }
+    }
+    debug(`opening the FIFO failed (${String(openError)}); falling back to a normal pipe`);
+    return undefined;
+  } finally {
+    // Both ends are open (or failed); the path is no longer needed.
+    fifo.remove();
+  }
+
+  return spawnIntoHandle(command, args, options, writeFd, new FifoReadable(readFd));
+}
+
+/**
+ * Windows has no FIFOs, but a named pipe served by this process gives the same
+ * effect: the child writes into a client handle, and the server-side socket is
+ * read with ordinary (working) stream backpressure.
+ */
+function spawnWithNamedPipe(command: string, args: string[], options: SpawnOptions): ChildWithStdout | undefined {
+  const path = `\\\\.\\pipe\\stdinman-${process.pid}-${randomBytes(6).toString("hex")}`;
+  const stdout = new PassThrough({ highWaterMark: READ_CHUNK_BYTES });
+  const server = createServer({ pauseOnConnect: true }, (socket) => {
+    server.close();
+    socket.on("error", (socketError) => stdout.destroy(socketError));
+    socket.pipe(stdout);
+  });
+  server.on("error", (serverError) => {
+    debug(`named pipe server error: ${serverError.message}`);
+    stdout.destroy(serverError);
+  });
+  // Both Node and Bun create the pipe synchronously, so it can be opened right away.
+  server.listen(path);
+
+  let writeFd: number;
+  try {
+    writeFd = openSync(path, "w");
+  } catch (openError) {
+    server.close();
+    debug(`opening the named pipe failed (${String(openError)}); falling back to a normal pipe`);
+    return undefined;
+  }
+
+  return spawnIntoHandle(command, args, options, writeFd, stdout);
+}
+
+/**
+ * Spawns a process whose stdout is read with real backpressure: through a FIFO
+ * on Linux and macOS, through a named pipe on Windows, and through a normal
+ * pipe if neither can be set up.
+ */
+export function spawnWithBackpressure(command: string, args: string[], options: SpawnOptions = {}): ChildWithStdout {
+  const spawned =
+    process.platform === "win32"
+      ? spawnWithNamedPipe(command, args, options)
+      : spawnWithFifo(command, args, options);
+  return spawned ?? spawnPiped(command, args, options);
 }
