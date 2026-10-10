@@ -24,6 +24,29 @@ export function formatLibrespotName(template: string, botName: string): string {
   return name;
 }
 
+function usesOption(args: string[], short: string, long: string): boolean {
+  return args.some((arg) => arg === `-${short}` || arg === `--${long}` || arg.startsWith(`--${long}=`));
+}
+
+/** librespot options stdinman sets itself; passing them again makes librespot fail on the duplicate. */
+const MANAGED_OPTIONS = [
+  { short: "n", long: "name", use: "--librespot-name" },
+  { short: "B", long: "backend", use: "" },
+  { short: "b", long: "bitrate", use: "--librespot-bitrate" },
+  { short: "f", long: "format", use: "" },
+] as const;
+
+/** Throws if extra librespot arguments clash with options stdinman passes itself. */
+export function validateLibrespotArgs(args: string[]): void {
+  for (const option of MANAGED_OPTIONS) {
+    if (usesOption(args, option.short, option.long)) {
+      throw new Error(
+        `--librespot-arg ${args.find((arg) => arg === `-${option.short}` || arg.startsWith(`--${option.long}`))} is managed by stdinman${option.use ? `; use ${option.use} instead` : ""}`,
+      );
+    }
+  }
+}
+
 export function librespotArgs(options: {
   librespotName: string;
   librespotBitrate: number;
@@ -35,15 +58,22 @@ export function librespotArgs(options: {
     options.librespotName,
     "--backend",
     "pipe",
+    // Float output keeps full resolution when Spotify's volume slider attenuates the signal;
+    // the default S16 output loses bits (and adds dither noise) at lower volumes.
+    "--format",
+    "F32",
     "-b",
     String(options.librespotBitrate),
+    // librespot starts at 50%, which its log volume curve maps to -30 dB. Start at full volume;
+    // the Spotify app's volume slider still works.
+    ...(usesOption(options.librespotArgs, "R", "initial-volume") ? [] : ["--initial-volume", "100"]),
     ...(options.onEventPath ? ["--onevent", options.onEventPath] : []),
     ...options.librespotArgs,
   ];
 }
 
 function userSetsOnEvent(args: string[]): boolean {
-  return args.some((arg) => arg === "-o" || arg === "--onevent" || arg.startsWith("--onevent="));
+  return usesOption(args, "o", "onevent");
 }
 
 /**
@@ -148,6 +178,7 @@ export function createSpotifySource(options: {
   librespotArgs: string[];
   nowPlaying: boolean;
 }): PreparedAudioSource {
+  validateLibrespotArgs(options.librespotArgs);
   const trackEvents = options.nowPlaying && !userSetsOnEvent(options.librespotArgs);
   const hook = trackEvents ? writeOnEventScript() : undefined;
   const nowPlaying = new EventEmitter<NowPlayingEvents>();
@@ -157,11 +188,12 @@ export function createSpotifySource(options: {
     command: options.librespotPath,
     args: librespotArgs({ ...options, onEventPath: hook?.path }),
     ffmpegInput: {
-      format: "s16le",
+      format: "f32le",
       sampleRate: 44_100,
       channels: 2,
       waitingMessage: `ffmpeg is still waiting for Spotify audio. Start playback on the Spotify Connect device "${options.librespotName}" if you have not already.`,
     },
+    fasterThanRealtime: true,
     startupMessage: `starting librespot and waiting for Spotify playback on device "${options.librespotName}"`,
     startedMessage: `librespot started; waiting for Spotify playback on device "${options.librespotName}"`,
     logPrefix: "librespot",

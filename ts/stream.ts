@@ -1,4 +1,5 @@
 import {
+  type AudioResource,
   AudioPlayerStatus,
   NoSubscriberBehavior,
   StreamType,
@@ -31,6 +32,8 @@ import {
   createCommandSource,
   createFfmpegOpusStream,
   createPulseMonitorSource,
+  createRealtimePacer,
+  pcmBytesPerSecond,
   createSwitchingStdinStream,
   createWindowsDshowSource,
 } from "./sources.ts";
@@ -672,16 +675,24 @@ export async function runStream(settings: Settings): Promise<void> {
     }
 
     info(source.startupMessage);
-    const transcoder = createFfmpegOpusStream(settings.ffmpegPath, source.stream, source.ffmpegInput, {
+    // The resource is created below; the pacer only reads its position once audio flows.
+    let resource: AudioResource<null> | undefined;
+    const bytesPerSecond = pcmBytesPerSecond(source.ffmpegInput);
+    const transcoderInput =
+      source.fasterThanRealtime && bytesPerSecond
+        ? createRealtimePacer(source.stream, bytesPerSecond, () => resource?.playbackDuration ?? 0)
+        : source.stream;
+    const transcoder = createFfmpegOpusStream(settings.ffmpegPath, transcoderInput, source.ffmpegInput, {
       volume: settings.volume,
       opusBitrate: settings.opusBitrate,
+      audioFilter: settings.audioFilter,
     });
     stopTranscoder = transcoder.stop;
     transcoder.events.on("error", (transcoderError) => {
       fail(transcoderError.message);
     });
 
-    const resource = createAudioResource(transcoder.stream, {
+    resource = createAudioResource(transcoder.stream, {
       inputType: StreamType.OggOpus,
       metadata: null,
     });

@@ -134,6 +134,24 @@ By default, the bot's activity shows what is playing ("Listening to …"):
 
 Turn it off with `--no-now-playing` or `now_playing = false`. Then, and for sources without track information, the bot shows `bot_activity`.
 
+## Sound Quality
+
+The Opus encoding is close to transparent at the default bitrate: in measurements, every frequency band stayed within about 1 dB of the source. If streamed audio sounds thinner than local playback, the usual causes are elsewhere:
+
+- **Volume**: quieter audio sounds noticeably thinner and less bassy. Make sure the source plays at full volume (stdinman now starts librespot at 100%), and use `--volume` rather than lowering the volume in Discord.
+- **Local sound processing**: loopback and monitor capture take the audio *before* your system's EQ, bass boost, "loudness equalization" or speaker correction. Listeners don't get that processing, so add it back with `--audio-filter`.
+- **Bitrate**: `--opus-bitrate 128` gives more headroom for dense music.
+
+Examples:
+
+```bash
+stdinman --audio-filter "bass=g=4:f=90"          # +4 dB low shelf around 90 Hz
+stdinman --audio-filter "loudnorm=I=-16:TP=-1.5" # even out loudness across tracks
+stdinman --audio-filter "bass=g=3,treble=g=1.5" --opus-bitrate 128
+```
+
+`loudnorm` looks ahead about 3 seconds, so it adds that much delay.
+
 ## Commands
 
 ```text
@@ -163,7 +181,8 @@ stdinman config init               Create the config file if it does not exist
 | `--sample-rate <HZ>`         | `sample_rate`       | stdin/command sample rate (default 48000)                            |
 | `--channels <N>`             | `channels`          | stdin/command channel count (default 2)                              |
 | `--volume <FACTOR>`          | `volume`            | Volume multiplier, 0–10 (default 1)                                  |
-| `--opus-bitrate <KBPS>`      | `opus_bitrate`      | Opus bitrate in kbit/s, 6–510 (0 = encoder default)                  |
+| `--opus-bitrate <KBPS>`      | `opus_bitrate`      | Opus bitrate in kbit/s, 6–510 (0 = encoder default, about 96)        |
+| `--audio-filter <FILTERS>`   | `audio_filter`      | Extra [ffmpeg audio filters](https://ffmpeg.org/ffmpeg-filters.html#Audio-Filters) before encoding |
 | `--librespot-path <PATH>`    | `librespot_path`    | librespot binary                                                     |
 | `--librespot-name <NAME>`    | `librespot_name`    | Spotify Connect device name; `{bot}` is the bot's name (default `discord: {bot}`) |
 | `--librespot-bitrate <KBPS>` | `librespot_bitrate` | `96`, `160` or `320`                                                 |
@@ -213,6 +232,8 @@ Tool paths (`ffmpeg_path`, `pw_record_path`, `parec_path`, `pactl_path`, `powers
 - **PipeWire applications**: `-d <name>` first looks for a device with that name or description. Otherwise it is treated as an application name (e.g. `Firefox`, `spotify`, `mpv`). stdinman waits for that application to play, and re-attaches whenever it starts a new stream.
 - **Reconnection**: voice connection failures are retried with exponential backoff (up to 30 s). The audio source and transcoder keep running.
 - **Stage channels**: the bot tries to become a speaker. If it cannot, it requests to speak.
+- **Latency**: Spotify and `media` audio is fed to the encoder only as fast as Discord plays it, so pausing, skipping and seeking take effect within about a second. Live capture sources are not delayed further.
+- **Spotify volume**: librespot starts at 100% volume (librespot's own default of 50% is −30 dB on its log curve) and outputs 32-bit float. The Spotify app's volume slider still controls it. Pass `--librespot-arg --initial-volume --librespot-arg 70` to start lower.
 - **Exit codes**: `0` for a normal end, `1` for runtime errors, `2` for usage or config errors.
 
 ## Development

@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { PassThrough, type Readable } from "node:stream";
 import type { InputFormat } from "./config.ts";
 import { LineTail, debug, info, isDebugEnabled, warn } from "./log.ts";
@@ -24,7 +24,73 @@ export type PreparedAudioSource = {
   nowPlaying?: EventEmitter<NowPlayingEvents>;
   /** Pause (rather than discard) audio while the bot is not in a channel. For finite media. */
   pauseWhenUnheard?: boolean;
+  /**
+   * The source produces audio faster than real time (librespot's pipe backend, file decoding).
+   * Such sources are paced, otherwise pipes and ffmpeg buffer many seconds of audio and
+   * pausing or skipping takes that long to be heard.
+   */
+  fasterThanRealtime?: boolean;
 };
+
+const BYTES_PER_SAMPLE: Record<Exclude<InputFormat, "wav">, number> = { f32le: 4, s16le: 2, s32le: 4 };
+
+/** Byte rate of raw PCM input, or undefined for self-describing formats such as WAV. */
+export function pcmBytesPerSecond(spec: FfmpegInputSpec): number | undefined {
+  return spec.format === "wav" ? undefined : BYTES_PER_SAMPLE[spec.format] * spec.sampleRate * spec.channels;
+}
+
+/** How much audio the pacer lets run ahead of playback, to absorb encoder delay and timer jitter. */
+export const PACER_LEAD_MS = 250;
+/** Until playback starts, ffmpeg needs a little more input before it emits its first packets. */
+const PACER_STARTUP_LEAD_MS = 1_000;
+const PACER_POLL_MS = 10;
+
+/**
+ * Releases PCM only as fast as it is actually played: at most `leadMs` ahead of
+ * `playedMs()`, the amount of real audio the consumer has played so far. Following
+ * the playback position (rather than the wall clock) also absorbs encoder startup,
+ * reconnects and paused playback without building up delay.
+ */
+export function createRealtimePacer(
+  input: Readable,
+  bytesPerSecond: number,
+  playedMs: () => number,
+  leadMs = PACER_LEAD_MS,
+): Readable {
+  const output = new PassThrough();
+  // Errors are reported through the input stream's own listeners.
+  output.on("error", () => {});
+  let sentMs = 0;
+  const allowedMs = (): number => {
+    const played = playedMs();
+    return played + (played > 0 ? leadMs : Math.max(leadMs, PACER_STARTUP_LEAD_MS));
+  };
+
+  void (async () => {
+    try {
+      for await (const chunk of input as AsyncIterable<Buffer>) {
+        while (!output.destroyed && sentMs > allowedMs()) {
+          await new Promise((resolve) => setTimeout(resolve, PACER_POLL_MS));
+        }
+
+        if (output.destroyed) {
+          break;
+        }
+
+        sentMs += (chunk.length / bytesPerSecond) * 1000;
+        if (!output.write(chunk)) {
+          await once(output, "drain");
+        }
+      }
+
+      output.end();
+    } catch (pacerError) {
+      output.destroy(pacerError instanceof Error ? pacerError : new Error(String(pacerError)));
+    }
+  })();
+
+  return output;
+}
 
 export const CAPTURE_SAMPLE_RATE = 48_000;
 export const CAPTURE_CHANNELS = 2;
@@ -127,6 +193,7 @@ export function createProcessAudioSource(options: {
   nowPlaying?: EventEmitter<NowPlayingEvents>;
   /** Called once the source has stopped or failed, e.g. to remove temporary files. */
   cleanup?: () => void;
+  fasterThanRealtime?: boolean;
 }): PreparedAudioSource {
   const output = new PassThrough();
   const stderrTail = new LineTail();
@@ -145,6 +212,7 @@ export function createProcessAudioSource(options: {
     stream: output,
     ffmpegInput: options.ffmpegInput,
     nowPlaying: options.nowPlaying,
+    fasterThanRealtime: options.fasterThanRealtime,
     start: (): void => {
       if (child || stopping) {
         return;
@@ -380,7 +448,17 @@ export function createAvfoundationSource(options: { ffmpegPath: string; audioDev
 export type TranscodeOptions = {
   volume: number;
   opusBitrate: number;
+  /** Extra ffmpeg audio filter chain, e.g. "bass=g=3". */
+  audioFilter?: string;
 };
+
+function audioFilterArgs(options: TranscodeOptions): string[] {
+  const filters = [
+    ...(options.volume !== 1 ? [`volume=${options.volume}`] : []),
+    ...(options.audioFilter ? [options.audioFilter] : []),
+  ];
+  return filters.length > 0 ? ["-af", filters.join(",")] : [];
+}
 
 export function ffmpegOpusArgs(
   ffmpegInput: FfmpegInputSpec,
@@ -404,7 +482,7 @@ export function ffmpegOpusArgs(
     "pipe:0",
     "-map",
     "0:a:0",
-    ...(options.volume !== 1 ? ["-af", `volume=${options.volume}`] : []),
+    ...audioFilterArgs(options),
     "-c:a",
     "libopus",
     ...(options.opusBitrate > 0 ? ["-b:a", `${options.opusBitrate}k`] : []),

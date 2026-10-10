@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { validateLibrespotArgs } from "./spotify.ts";
 import {
   type AudioSource,
   ConfigError,
@@ -37,6 +38,7 @@ const OPTIONS = {
   "no-now-playing": { type: "boolean" },
   volume: { type: "string" },
   "opus-bitrate": { type: "string" },
+  "audio-filter": { type: "string" },
   "ffmpeg-path": { type: "string" },
   "parec-path": { type: "string" },
   "pactl-path": { type: "string" },
@@ -128,6 +130,7 @@ export type Settings = {
   nowPlaying: boolean;
   volume: number;
   opusBitrate: number;
+  audioFilter: string;
   ffmpegPath: string;
   parecPath: string;
   pactlPath: string;
@@ -217,6 +220,7 @@ export function resolveSettings(
     nowPlaying: values["no-now-playing"] ? false : (values["now-playing"] ?? config.now_playing),
     volume: parseFlag("volume", values.volume, parseVolume) ?? config.volume,
     opusBitrate: parseFlag("opus-bitrate", values["opus-bitrate"], parseOpusBitrate) ?? config.opus_bitrate,
+    audioFilter: values["audio-filter"] ?? config.audio_filter,
     ffmpegPath: values["ffmpeg-path"] ?? config.ffmpeg_path,
     parecPath: values["parec-path"] ?? config.parec_path,
     pactlPath: values["pactl-path"] ?? config.pactl_path,
@@ -326,6 +330,14 @@ export function validateRunSettings(settings: Settings, configPath: string, plat
     throw new UsageError(`source "command" requires --command or command in ${configPath}`);
   }
 
+  if (settings.audioSource === "spotify") {
+    try {
+      validateLibrespotArgs(settings.librespotArgs);
+    } catch (argsError) {
+      throw new UsageError(argsError instanceof Error ? argsError.message : String(argsError));
+    }
+  }
+
   if (sourceRequiresDevice(settings.audioSource) && !settings.audioDevice) {
     throw new UsageError(
       `source "${settings.audioSource}" requires --audio-device or audio_device in ${configPath} (run "stdinman devices list" to see available devices)`,
@@ -390,7 +402,8 @@ Audio:
   --sample-rate <HZ>           stdin/command sample rate (default: 48000)
   --channels <N>               stdin/command channel count (default: 2)
   --volume <FACTOR>            Volume multiplier, 0-10 (default: 1)
-  --opus-bitrate <KBPS>        Opus bitrate in kbit/s, 6-510 (default: encoder default)
+  --opus-bitrate <KBPS>        Opus bitrate in kbit/s, 6-510 (default: encoder default, ~96 for stereo)
+  --audio-filter <FILTERS>     Extra ffmpeg audio filters before encoding, e.g. "bass=g=3"
 
 Spotify (librespot):
   --librespot-path <PATH>      librespot binary (default: librespot)

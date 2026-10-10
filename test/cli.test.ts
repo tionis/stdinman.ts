@@ -177,6 +177,12 @@ describe("validateRunSettings", () => {
     expect(() => validateRunSettings({ ...base(), audioSource: "windows-loopback" }, "cfg", "linux")).toThrow(/Windows/);
   });
 
+  test("spotify rejects conflicting librespot args", () => {
+    expect(() =>
+      validateRunSettings({ ...base(), audioSource: "spotify", librespotArgs: ["--format", "S16"] }, "cfg"),
+    ).toThrow(UsageError);
+  });
+
   test("capture sources require a device and the right platform", () => {
     const pulse = { ...base(), audioSource: "pulse-monitor" as const };
     expect(() => validateRunSettings(pulse, "cfg", "linux")).toThrow(/audio-device/);

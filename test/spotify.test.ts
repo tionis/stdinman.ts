@@ -10,6 +10,7 @@ import {
   formatLibrespotName,
   formatTrackTitle,
   librespotArgs,
+  validateLibrespotArgs,
   onEventScript,
   parseLibrespotEventLine,
 } from "../ts/spotify.ts";
@@ -23,6 +24,26 @@ describe("librespot args", () => {
     const withHook = librespotArgs({ ...base, onEventPath: "/tmp/hook.sh" });
     expect(withHook[withHook.indexOf("--onevent") + 1]).toBe("/tmp/hook.sh");
     expect(withHook.at(-1)).toBe("--x");
+  });
+
+  test("full initial volume and float output", () => {
+    const args = librespotArgs({ librespotName: "dev", librespotBitrate: 160, librespotArgs: [] });
+    expect(args).toEqual(["-n", "dev", "--backend", "pipe", "--format", "F32", "-b", "160", "--initial-volume", "100"]);
+  });
+
+  test("a user supplied initial volume wins", () => {
+    for (const userArgs of [["-R", "40"], ["--initial-volume", "40"], ["--initial-volume=40"]]) {
+      const args = librespotArgs({ librespotName: "dev", librespotBitrate: 320, librespotArgs: userArgs });
+      expect(args.filter((arg) => arg === "100")).toEqual([]);
+    }
+  });
+
+  test("options stdinman manages are rejected", () => {
+    expect(() => validateLibrespotArgs(["--format", "S16"])).toThrow(/managed by stdinman/);
+    expect(() => validateLibrespotArgs(["-n", "x"])).toThrow(/--librespot-name/);
+    expect(() => validateLibrespotArgs(["--bitrate=160"])).toThrow(/--librespot-bitrate/);
+    expect(() => validateLibrespotArgs(["--backend", "alsa"])).toThrow(/managed/);
+    expect(() => validateLibrespotArgs(["--initial-volume", "80", "--volume-ctrl", "fixed"])).not.toThrow();
   });
 });
 

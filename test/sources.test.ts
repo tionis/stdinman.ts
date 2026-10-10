@@ -1,17 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { PassThrough, type Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { LineTail } from "../ts/log.ts";
 import {
   createCommandSource,
   createFfmpegOpusStream,
   createProcessAudioSource,
+  createRealtimePacer,
+  pcmBytesPerSecond,
   createSwitchingStdinStream,
   directShowCaptureArgs,
   ffmpegOpusArgs,
   formatDirectShowAudioInput,
 } from "../ts/sources.ts";
-import { librespotArgs } from "../ts/spotify.ts";
 
 const PCM_SPEC = { format: "s16le" as const, sampleRate: 48_000, channels: 2, waitingMessage: "waiting" };
 const hasFfmpeg = spawnSync("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8" }).stdout?.includes("libopus");
@@ -44,21 +45,16 @@ describe("argument builders", () => {
     expect(input).not.toContain("-ar");
   });
 
+  test("volume and custom filters share one filter chain", () => {
+    const args = ffmpegOpusArgs(PCM_SPEC, { volume: 2, opusBitrate: 0, audioFilter: "bass=g=3" }, false);
+    expect(args[args.indexOf("-af") + 1]).toBe("volume=2,bass=g=3");
+    const onlyFilter = ffmpegOpusArgs(PCM_SPEC, { volume: 1, opusBitrate: 0, audioFilter: "loudnorm" }, false);
+    expect(onlyFilter[onlyFilter.indexOf("-af") + 1]).toBe("loudnorm");
+  });
+
   test("ffmpeg log level follows debug mode", () => {
     const args = ffmpegOpusArgs(PCM_SPEC, { volume: 1, opusBitrate: 0 }, true);
     expect(args[args.indexOf("-loglevel") + 1]).toBe("warning");
-  });
-
-  test("librespot args", () => {
-    expect(librespotArgs({ librespotName: "dev", librespotBitrate: 160, librespotArgs: ["--x"] })).toEqual([
-      "-n",
-      "dev",
-      "--backend",
-      "pipe",
-      "-b",
-      "160",
-      "--x",
-    ]);
   });
 
   test("DirectShow input names", () => {
@@ -66,6 +62,56 @@ describe("argument builders", () => {
     expect(formatDirectShowAudioInput("audio=Mic")).toBe("audio=Mic");
     expect(formatDirectShowAudioInput("video=Cam:audio=Mic")).toBe("video=Cam:audio=Mic");
     expect(directShowCaptureArgs("Mic", false)).toContain("audio=Mic");
+  });
+});
+
+describe("realtime pacer", () => {
+  const RATE = 1_000; // bytes per second, so 1 byte = 1 ms of audio
+  const chunks = (count: number, size: number) =>
+    Readable.from(Array.from({ length: count }, () => Buffer.alloc(size)), { objectMode: false });
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
+
+  test("releases audio only as far ahead of playback as the lead allows", async () => {
+    let played = 0;
+    const output = createRealtimePacer(chunks(100, 100), RATE, () => played, 250);
+    let received = 0;
+    output.on("data", (chunk: Buffer) => {
+      received += chunk.length;
+    });
+
+    // Before playback starts, a larger startup lead applies.
+    await settle();
+    expect(received).toBeGreaterThanOrEqual(1_000);
+    expect(received).toBeLessThanOrEqual(1_100);
+
+    played = 2_000;
+    await settle();
+    expect(received).toBeGreaterThanOrEqual(2_250);
+    expect(received).toBeLessThanOrEqual(2_350);
+
+    // Paused playback holds the producer back instead of buffering.
+    await settle();
+    expect(received).toBeLessThanOrEqual(2_350);
+
+    played = 20_000;
+    await new Promise((resolve) => output.once("end", resolve));
+    expect(received).toBe(10_000);
+  });
+
+  test("stops when the output is destroyed", async () => {
+    const input = chunks(100, 100);
+    const output = createRealtimePacer(input, RATE, () => 0, 250);
+    output.resume();
+    await settle();
+    output.destroy();
+    await settle();
+    expect(input.readableEnded).toBe(false);
+  });
+
+  test("byte rates", () => {
+    expect(pcmBytesPerSecond({ ...PCM_SPEC, format: "f32le", sampleRate: 44_100 })).toBe(44_100 * 2 * 4);
+    expect(pcmBytesPerSecond(PCM_SPEC)).toBe(48_000 * 2 * 2);
+    expect(pcmBytesPerSecond({ ...PCM_SPEC, format: "wav" })).toBeUndefined();
   });
 });
 

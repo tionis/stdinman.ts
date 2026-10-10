@@ -15,8 +15,14 @@
 - Standalone binaries built with `bun build --compile` for Linux x64/arm64, macOS arm64 and Windows x64, attached to GitHub releases with `SHA256SUMS`. Use `bun run compile` to build one locally.
 - stdin and the `command` source now accept `s32le` and `wav` input, plus `--sample-rate` and `--channels`.
 - `doctor` checks that the DAVE library loads and covers the new sources.
+- `--audio-filter` / `audio_filter` adds ffmpeg audio filters (EQ, bass boost, loudness normalization) before encoding.
 
 ### Fixed
+
+- Pausing, skipping and seeking in Spotify took many seconds to be heard: librespot's pipe backend runs faster than real time, so 13 s (under Node) to several minutes (under Bun / the standalone binary) of audio piled up in pipes and ffmpeg. Spotify and media audio is now released no faster than Discord plays it, which keeps the delay below a second.
+
+- Spotify played quietly and thin: librespot defaulted to 50% volume, which is −30 dB on its log volume curve, with 16-bit dithered output. stdinman now starts it at 100% and uses 32-bit float output. The app's volume slider still works.
+- Extra librespot arguments that clash with options stdinman sets itself (name, backend, bitrate, format) are rejected with a clear message. Before, librespot failed on the duplicate option.
 
 - Live sources started streaming after many seconds instead of immediately: ffmpeg probed 5 MB of input first, about 13 s at 48 kHz float and about 30 s for Spotify.
 - `pw-record` no longer falls back to a different device when the target is missing.
@@ -40,6 +46,11 @@
 - Unit and integration tests (`bun test`), GitHub Actions CI on Linux/macOS/Windows, a tag-driven release workflow with optional npm trusted publishing (OIDC), and Dependabot.
 
 ### Fixed
+
+- Pausing, skipping and seeking in Spotify took many seconds to be heard: librespot's pipe backend runs faster than real time, so 13 s (under Node) to several minutes (under Bun / the standalone binary) of audio piled up in pipes and ffmpeg. Spotify and media audio is now released no faster than Discord plays it, which keeps the delay below a second.
+
+- Spotify played quietly and thin: librespot defaulted to 50% volume, which is −30 dB on its log volume curve, with 16-bit dithered output. stdinman now starts it at 100% and uses 32-bit float output. The app's volume slider still works.
+- Extra librespot arguments that clash with options stdinman sets itself (name, backend, bitrate, format) are rejected with a clear message. Before, librespot failed on the duplicate option.
 
 - Live sources no longer end playback during short silences: pausing Spotify for more than 100 ms used to make the bot disconnect and exit.
 - Ogg pages are now flushed every 20 ms instead of every second, which makes live audio smoother and lowers latency.

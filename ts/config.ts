@@ -36,6 +36,7 @@ export type StdinmanConfig = {
   now_playing: boolean;
   volume: number;
   opus_bitrate: number;
+  audio_filter: string;
   ffmpeg_path: string;
   parec_path: string;
   pactl_path: string;
@@ -64,6 +65,8 @@ export const DEFAULT_CONFIG: Readonly<StdinmanConfig> = Object.freeze({
   volume: 1,
   // 0 lets libopus pick its default bitrate.
   opus_bitrate: 0,
+  // Extra ffmpeg audio filters applied before encoding, e.g. "bass=g=3" or "loudnorm".
+  audio_filter: "",
   ffmpeg_path: "ffmpeg",
   parec_path: "parec",
   pactl_path: "pactl",
@@ -152,6 +155,7 @@ export function parseConfig(text: string): ParsedConfig {
     now_playing: readBoolean(parsed, "now_playing"),
     volume: readEnum(parsed, "volume", parseVolume),
     opus_bitrate: readEnum(parsed, "opus_bitrate", parseOpusBitrate),
+    audio_filter: readString(parsed, "audio_filter"),
     ffmpeg_path: readString(parsed, "ffmpeg_path"),
     parec_path: readString(parsed, "parec_path"),
     pactl_path: readString(parsed, "pactl_path"),

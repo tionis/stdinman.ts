@@ -61,6 +61,7 @@ sample_rate = 44100
 channels = 1
 follow_user_id = 123456789012345678
 now_playing = false
+audio_filter = "bass=g=3"
 `);
     expect(config.inputs).toEqual(["a.mp3", "https://example.com/stream"]);
     expect(config.loop).toBe(true);
@@ -69,6 +70,7 @@ now_playing = false
     expect(config.channels).toBe(1);
     expect(config.follow_user_id).toBe("123456789012345678");
     expect(config.now_playing).toBe(false);
+    expect(config.audio_filter).toBe("bass=g=3");
   });
 
   test("rejects small numeric channel IDs with a hint to quote them", () => {
