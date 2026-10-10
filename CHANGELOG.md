@@ -33,4 +33,4 @@
 
 ## 0.1.0
 
-- Initial standalone TypeScript release, extracted from `ckcr4lyf/stdinman`.
+- Initial TypeScript reimplementation of the Rust [`ckcr4lyf/stdinman`](https://github.com/ckcr4lyf/stdinman), with DAVE support and Spotify, PulseAudio/PipeWire and DirectShow sources.

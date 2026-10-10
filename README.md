@@ -2,13 +2,13 @@
 
 [![CI](https://github.com/tionis/stdinman.ts/actions/workflows/ci.yml/badge.svg)](https://github.com/tionis/stdinman.ts/actions/workflows/ci.yml)
 
-`stdinman.ts` streams audio into a Discord voice or stage channel through a bot. It is a standalone TypeScript implementation of `stdinman`.
+`stdinman.ts` streams audio into a Discord voice or stage channel through a bot.
 
-This project was extracted from the TypeScript/DAVE-capable implementation inside the original [`ckcr4lyf/stdinman`](https://github.com/ckcr4lyf/stdinman) repository. The original project established the idea and shipped the earlier Rust implementation; this repository focuses only on the maintained TypeScript runtime.
+It is a TypeScript reimplementation inspired by [`ckcr4lyf/stdinman`](https://github.com/ckcr4lyf/stdinman), a small Rust tool that pipes audio from stdin into Discord. `stdinman.ts` keeps that core idea and the same config file location. It adds support for Discord's DAVE end-to-end encryption, and goes beyond stdin with built-in sources for Spotify, PulseAudio/PipeWire and Windows audio devices. More sources may follow.
 
 Authors:
-- `ckcr4lyf`
 - `tionis.dev`
+- `ckcr4lyf` (original Rust `stdinman`)
 
 ## What It Does
 
@@ -124,7 +124,7 @@ Settings are taken from CLI flags first, then environment variables, then the co
 
 ## Config File
 
-The default location is `$XDG_CONFIG_HOME/stdinman/stdinman.toml` (usually `~/.config/stdinman/stdinman.toml`), the same as the original stdinman. The file is created with owner-only permissions the first time you run stdinman, or when you run `stdinman config init`.
+The default location is `$XDG_CONFIG_HOME/stdinman/stdinman.toml` (usually `~/.config/stdinman/stdinman.toml`), the same as the Rust stdinman. The file is created with owner-only permissions the first time you run stdinman, or when you run `stdinman config init`.
 
 ```toml
 bot_token = ""
@@ -184,8 +184,8 @@ Publishing to npm uses [trusted publishing](https://docs.npmjs.com/trusted-publi
 
 ## Attribution
 
-- Original project and concept: [`ckcr4lyf/stdinman`](https://github.com/ckcr4lyf/stdinman)
-- This repository: standalone TypeScript continuation maintained by `tionis.dev`
+- Original idea and Rust implementation: [`ckcr4lyf/stdinman`](https://github.com/ckcr4lyf/stdinman)
+- This TypeScript reimplementation and its additional sources: `tionis.dev`
 
 ## License
 
