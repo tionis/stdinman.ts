@@ -10,6 +10,7 @@ import {
   formatLibrespotName,
   formatTrackTitle,
   librespotArgs,
+  librespotLogLevel,
   validateLibrespotArgs,
   onEventScript,
   parseLibrespotEventLine,
@@ -55,6 +56,13 @@ test("device name template", () => {
   expect(formatLibrespotName("{bot}", "x".repeat(100))).toHaveLength(63);
   // Truncation counts UTF-8 bytes and never splits a character.
   expect(Buffer.byteLength(formatLibrespotName("{bot}", "é".repeat(40)))).toBe(62);
+});
+
+test("librespot log levels", () => {
+  expect(librespotLogLevel("[2026-10-10T14:22:59Z WARN  libmdns::fsm] error sending packet")).toBe("WARN");
+  expect(librespotLogLevel("[2026-10-10T14:22:59Z ERROR librespot_core::session] connection lost")).toBe("ERROR");
+  expect(librespotLogLevel("[2026-10-10T14:22:59Z INFO  librespot] librespot 0.8.0")).toBe("INFO");
+  expect(librespotLogLevel("plain text")).toBeUndefined();
 });
 
 describe("event parsing", () => {

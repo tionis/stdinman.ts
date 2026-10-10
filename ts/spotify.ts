@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { debug } from "./log.ts";
+import { debug, warn } from "./log.ts";
 import { type NowPlayingEvents, type PreparedAudioSource, createProcessAudioSource } from "./sources.ts";
 
 const EVENT_MARKER = "STDINMAN_EVENT";
@@ -107,6 +107,11 @@ export type LibrespotEvent = {
   showName: string;
 };
 
+/** Extracts the level from a librespot log line like "[2026-10-10T14:22:59Z WARN  libmdns::fsm] ...". */
+export function librespotLogLevel(line: string): string | undefined {
+  return line.match(/^\[\S+\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s/)?.[1];
+}
+
 export function parseLibrespotEventLine(line: string): LibrespotEvent | undefined {
   if (!line.startsWith(EVENT_MARKER + FIELD_SEPARATOR)) {
     return undefined;
@@ -183,6 +188,7 @@ export function createSpotifySource(options: {
   const hook = trackEvents ? writeOnEventScript() : undefined;
   const nowPlaying = new EventEmitter<NowPlayingEvents>();
   const tracker = new SpotifyNowPlayingTracker(nowPlaying);
+  const seenWarnings = new Set<string>();
 
   return createProcessAudioSource({
     command: options.librespotPath,
@@ -201,7 +207,21 @@ export function createSpotifySource(options: {
     onStderrLine: (line) => {
       const event = parseLibrespotEventLine(line);
       if (!event) {
-        return false;
+        const level = librespotLogLevel(line);
+        if (level !== "WARN" && level !== "ERROR") {
+          return false;
+        }
+
+        // Show each distinct warning once; some (e.g. mDNS send errors) repeat constantly.
+        const message = line.replace(/^\[\S+\s+/, "");
+        // Expected: stdinman deliberately reads audio only as fast as it is played.
+        if (/Throughput .* lower than minimum/.test(message) || seenWarnings.has(message)) {
+          return false;
+        }
+
+        seenWarnings.add(message);
+        warn(`[librespot] ${message}`);
+        return true;
       }
 
       debug(`[librespot] event ${event.event}${event.name ? `: ${event.name}` : ""}`);

@@ -1,7 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { PassThrough, type Readable } from "node:stream";
+import { trackChild } from "./children.ts";
 import type { InputFormat } from "./config.ts";
+import { spawnPiped, spawnWithBackpressure } from "./fifo.ts";
 import { LineTail, debug, info, isDebugEnabled, warn } from "./log.ts";
 
 export type FfmpegInputSpec = {
@@ -198,6 +200,7 @@ export function createProcessAudioSource(options: {
   const output = new PassThrough();
   const stderrTail = new LineTail();
   let child: ChildProcess | undefined;
+  let childStdout: Readable | undefined;
   let stopping = false;
   let cleanedUp = false;
   const cleanup = (): void => {
@@ -219,19 +222,20 @@ export function createProcessAudioSource(options: {
       }
 
       debug(`starting ${options.logPrefix} source: ${options.command} ${options.args.join(" ")}`);
-      child = spawn(options.command, options.args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        shell: options.shell,
-      });
+      const spawnOptions = { windowsHide: true, shell: options.shell };
+      // Producers faster than real time need real backpressure, or they run far ahead of playback.
+      const spawned = options.fasterThanRealtime
+        ? spawnWithBackpressure(options.command, options.args, spawnOptions)
+        : spawnPiped(options.command, options.args, spawnOptions);
+      child = spawned.child;
+      childStdout = spawned.stdout;
 
-      const stdout = child.stdout;
       const stderr = child.stderr;
-      if (!stdout || !stderr) {
-        throw new Error(`${options.logPrefix} did not start with piped stdout/stderr`);
+      if (!stderr) {
+        throw new Error(`${options.logPrefix} did not start with piped stderr`);
       }
 
-      stdout.pipe(output);
+      spawned.stdout.pipe(output, { end: false });
       stderr.setEncoding("utf8");
       stderr.on("data", (chunk: string) => {
         for (const line of stderrTail.push(chunk)) {
@@ -249,7 +253,7 @@ export function createProcessAudioSource(options: {
           new Error(`failed to start ${options.logPrefix} source (${options.command}): ${childError.message}${hint}`),
         );
       });
-      child.on("close", (code, signal) => {
+      spawned.onClose((code, signal) => {
         cleanup();
         if (stopping || code === 0) {
           // A clean exit ends the audio like EOF on stdin.
@@ -280,7 +284,7 @@ export function createProcessAudioSource(options: {
         return;
       }
 
-      child.stdout?.unpipe(output);
+      childStdout?.unpipe(output);
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
       }
@@ -523,10 +527,12 @@ export function createFfmpegOpusStream(
 
   const events = new EventEmitter<{ error: [Error] }>();
   const stderrTail = new LineTail();
-  const child = spawn(ffmpegPath, ffmpegArgs, {
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  const child = trackChild(
+    spawn(ffmpegPath, ffmpegArgs, {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    }),
+  );
   let sawOutput = false;
   let stopping = false;
   let failed = false;

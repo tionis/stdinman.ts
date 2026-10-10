@@ -1,9 +1,10 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, type Readable } from "node:stream";
+import { spawnWithBackpressure } from "./fifo.ts";
 import { LineTail, debug, info, warn } from "./log.ts";
 import { CAPTURE_CHANNELS, CAPTURE_SAMPLE_RATE, type NowPlayingEvents, type PreparedAudioSource, rawPcmInput } from "./sources.ts";
 
@@ -87,7 +88,7 @@ async function listAudioFiles(dir: string): Promise<string[]> {
   return files;
 }
 
-export function mediaDecodeArgs(input: string): string[] {
+export function mediaDecodeArgs(input: string, platform: NodeJS.Platform = process.platform): string[] {
   return [
     "-hide_banner",
     "-nostdin",
@@ -95,6 +96,8 @@ export function mediaDecodeArgs(input: string): string[] {
     // "info" is needed for the input metadata dump used for now-playing titles.
     "-loglevel",
     "info",
+    // Windows has no FIFOs to hold the decoder back (see fifo.ts), so read at native speed there.
+    ...(platform === "win32" ? ["-re"] : []),
     ...(isUrl(input) ? ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"] : []),
     "-i",
     input,
@@ -189,6 +192,7 @@ export function createMediaSource(options: { ffmpegPath: string; inputs: string[
   const output = new PassThrough();
   const nowPlaying = new EventEmitter<NowPlayingEvents>();
   let child: ChildProcess | undefined;
+  let childStdout: Readable | undefined;
   let started = false;
   let stopping = false;
   let index = 0;
@@ -239,13 +243,15 @@ export function createMediaSource(options: { ffmpegPath: string; inputs: string[
     };
 
     debug(`starting media decoder: ${options.ffmpegPath} ${args.join(" ")}`);
-    const current = spawn(options.ffmpegPath, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const spawned = spawnWithBackpressure(options.ffmpegPath, args, { windowsHide: true });
+    const current = spawned.child;
     child = current;
+    childStdout = spawned.stdout;
 
-    current.stdout.pipe(output, { end: false });
-    current.stdout.once("data", reportTitle);
-    current.stderr.setEncoding("utf8");
-    current.stderr.on("data", (chunk: string) => {
+    spawned.stdout.pipe(output, { end: false });
+    spawned.stdout.once("data", reportTitle);
+    current.stderr!.setEncoding("utf8");
+    current.stderr!.on("data", (chunk: string) => {
       for (const line of stderrTail.push(chunk)) {
         debug(`[ffmpeg-media] ${line}`);
         if (metadata.push(line)) {
@@ -261,8 +267,8 @@ export function createMediaSource(options: { ffmpegPath: string; inputs: string[
       finish(new Error(`failed to start ffmpeg media decoder (${options.ffmpegPath}): ${spawnError.message}${hint}`));
     });
 
-    current.on("close", (code, signal) => {
-      current.stdout.unpipe(output);
+    spawned.onClose((code, signal) => {
+      spawned.stdout.unpipe(output);
       if (stopping || failedToSpawn) {
         return;
       }
@@ -297,8 +303,8 @@ export function createMediaSource(options: { ffmpegPath: string; inputs: string[
 
       stopping = true;
       output.end();
+      childStdout?.unpipe(output);
       if (child && child.exitCode === null && child.signalCode === null) {
-        child.stdout?.unpipe(output);
         child.kill("SIGTERM");
       }
     },

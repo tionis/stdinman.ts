@@ -377,6 +377,10 @@ export async function runStream(settings: Settings): Promise<void> {
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  // Closing the terminal (or tmux session) sends SIGHUP.
+  if (process.platform !== "win32") {
+    process.on("SIGHUP", onSignal);
+  }
 
   client.on(Events.Error, (clientError) => {
     error(clientError.stack ?? String(clientError));

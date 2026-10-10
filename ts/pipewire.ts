@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
+import { trackChild } from "./children.ts";
 import { CommandNotFoundError, runCommandCapture } from "./devices.ts";
 import { LineTail, debug, info } from "./log.ts";
 import { type PreparedAudioSource, pwRecordArgs, rawPcmInput } from "./sources.ts";
@@ -127,7 +128,7 @@ export function createPipeWireSource(options: {
     const args = pwRecordArgs(pwTarget);
     debug(`starting pw-record: ${options.pwRecordPath} ${args.join(" ")}`);
     const stderrTail = new LineTail();
-    const current = spawn(options.pwRecordPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const current = trackChild(spawn(options.pwRecordPath, args, { stdio: ["ignore", "pipe", "pipe"] }));
     child = current;
     current.stdout.pipe(output, { end: false });
     current.stderr.setEncoding("utf8");

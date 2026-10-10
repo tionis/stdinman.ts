@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- Under Bun (`bun run`, and the standalone binaries), Spotify ignored pause and song changes: Bun reads child process output eagerly regardless of backpressure, so librespot decoded at about 100× real time and over an hour of audio queued up in memory. Fast sources (librespot, the media decoder) now write into a FIFO that stdinman reads only as fast as audio is played, on Linux and macOS. On Windows, media decoding runs at native speed instead; Spotify on Windows should run under Node until there is a fix there.
 - Pausing, skipping and seeking in Spotify took many seconds to be heard: librespot's pipe backend runs faster than real time, so 13 s (under Node) to several minutes (under Bun / the standalone binary) of audio piled up in pipes and ffmpeg. Spotify and media audio is now released no faster than Discord plays it, which keeps the delay below a second.
 
 - Spotify played quietly and thin: librespot defaulted to 50% volume, which is −30 dB on its log volume curve, with 16-bit dithered output. stdinman now starts it at 100% and uses 32-bit float output. The app's volume slider still works.
@@ -47,6 +48,7 @@
 
 ### Fixed
 
+- Under Bun (`bun run`, and the standalone binaries), Spotify ignored pause and song changes: Bun reads child process output eagerly regardless of backpressure, so librespot decoded at about 100× real time and over an hour of audio queued up in memory. Fast sources (librespot, the media decoder) now write into a FIFO that stdinman reads only as fast as audio is played, on Linux and macOS. On Windows, media decoding runs at native speed instead; Spotify on Windows should run under Node until there is a fix there.
 - Pausing, skipping and seeking in Spotify took many seconds to be heard: librespot's pipe backend runs faster than real time, so 13 s (under Node) to several minutes (under Bun / the standalone binary) of audio piled up in pipes and ffmpeg. Spotify and media audio is now released no faster than Discord plays it, which keeps the delay below a second.
 
 - Spotify played quietly and thin: librespot defaulted to 50% volume, which is −30 dB on its log volume curve, with 16-bit dithered output. stdinman now starts it at 100% and uses 32-bit float output. The app's volume slider still works.

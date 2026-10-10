@@ -233,6 +233,7 @@ Tool paths (`ffmpeg_path`, `pw_record_path`, `parec_path`, `pactl_path`, `powers
 - **Reconnection**: voice connection failures are retried with exponential backoff (up to 30 s). The audio source and transcoder keep running.
 - **Stage channels**: the bot tries to become a speaker. If it cannot, it requests to speak.
 - **Latency**: Spotify and `media` audio is fed to the encoder only as fast as Discord plays it, so pausing, skipping and seeking take effect within about a second. Live capture sources are not delayed further.
+- **Spotify on Windows**: Bun, which the standalone binaries are built on, reads child process output without backpressure, and Windows has no FIFOs to work around it. With the Windows binary, librespot runs far ahead of playback, so pausing and skipping lag behind. Install via npm and run under Node for Spotify on Windows.
 - **Spotify volume**: librespot starts at 100% volume (librespot's own default of 50% is −30 dB on its log curve) and outputs 32-bit float. The Spotify app's volume slider still controls it. Pass `--librespot-arg --initial-volume --librespot-arg 70` to start lower.
 - **Exit codes**: `0` for a normal end, `1` for runtime errors, `2` for usage or config errors.
 

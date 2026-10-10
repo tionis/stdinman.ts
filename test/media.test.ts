@@ -57,6 +57,11 @@ describe("inputs", () => {
     expect(expandInputs(["/definitely/missing.mp3"])).rejects.toThrow(/input not found/);
   });
 
+  test("Windows decodes at native speed", () => {
+    expect(mediaDecodeArgs("a.mp3", "win32")).toContain("-re");
+    expect(mediaDecodeArgs("a.mp3", "linux")).not.toContain("-re");
+  });
+
   test("URLs get reconnect options", () => {
     expect(mediaDecodeArgs("https://x/y")).toContain("-reconnect");
     expect(mediaDecodeArgs("a.mp3")).not.toContain("-reconnect");
