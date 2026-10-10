@@ -52,6 +52,19 @@ jobs:
           node dist/stdinman.js --version
           node dist/stdinman.js config path
 
+      - name: Build the standalone binary
+        run: bun run compile
+
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          bin=dist/bin/stdinman
+          [ "$RUNNER_OS" = Windows ] && bin=dist/bin/stdinman.exe
+          "$bin" --version
+          # doctor fails without a token; only the DAVE check matters here.
+          "$bin" doctor -c does-not-exist.toml | tee doctor.txt || true
+          grep -E "ok +DAVE library" doctor.txt
+
       - name: Check the npm package contents
         if: runner.os == 'Linux'
         run: npm pack --dry-run

@@ -130,12 +130,47 @@ export function parseDirectShowAudioDevices(stderr: string): string[] {
   return devices;
 }
 
+export const SOURCE_DESCRIPTIONS: Record<AudioSource, string> = {
+  stdin: "Read raw PCM or WAV from stdin",
+  command: "Run a command and read raw PCM or WAV from its stdout",
+  media: "Play files, directories or URLs with ffmpeg",
+  spotify: "Spawn librespot and stream Spotify Connect audio",
+  "pulse-monitor": "Capture a PulseAudio/PipeWire source via parec (Linux)",
+  pipewire: "Capture a PipeWire device or application via pw-record (Linux)",
+  "windows-dshow": "Capture a DirectShow audio device via ffmpeg (Windows)",
+  "windows-loopback": "Capture what a Windows output device plays (Windows)",
+  "macos-avfoundation": "Capture an AVFoundation audio device via ffmpeg (macOS)",
+};
+
 export function printAvailableSources(): void {
   console.log("Available source modes:");
-  console.log("  stdin           Read raw PCM from stdin");
-  console.log("  spotify         Spawn librespot and stream Spotify Connect audio");
-  console.log("  pulse-monitor   Capture a PulseAudio/PipeWire source via parec (Linux)");
-  console.log("  windows-dshow   Capture a Windows DirectShow audio device via ffmpeg (Windows)");
+  for (const [source, description] of Object.entries(SOURCE_DESCRIPTIONS)) {
+    console.log(`  ${source.padEnd(20)}${description}`);
+  }
+}
+
+/** Extracts audio devices from `ffmpeg -f avfoundation -list_devices true -i ""` stderr. */
+export function parseAvfoundationAudioDevices(stderr: string): Array<{ index: string; name: string }> {
+  const devices: Array<{ index: string; name: string }> = [];
+  let inAudioSection = false;
+  for (const line of stderr.split(/\r?\n/)) {
+    if (/AVFoundation audio devices/i.test(line)) {
+      inAudioSection = true;
+      continue;
+    }
+
+    if (/AVFoundation video devices/i.test(line)) {
+      inAudioSection = false;
+      continue;
+    }
+
+    const match = line.match(/\[(\d+)\]\s+(.+?)\s*$/);
+    if (inAudioSection && match) {
+      devices.push({ index: match[1], name: match[2] });
+    }
+  }
+
+  return devices;
 }
 
 async function listPulseSources(pactlPath: string): Promise<void> {
@@ -209,10 +244,111 @@ async function listDirectShowAudioDevices(ffmpegPath: string): Promise<void> {
   }
 }
 
+async function listAvfoundationAudioDevices(ffmpegPath: string): Promise<void> {
+  let result: CapturedCommandResult;
+  try {
+    result = await runCommandCapture(ffmpegPath, ["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""]);
+  } catch (captureError) {
+    if (captureError instanceof CommandNotFoundError) {
+      throw new Error(`cannot list AVFoundation devices: ${captureError.message}. Install ffmpeg or pass --ffmpeg-path.`);
+    }
+
+    throw captureError;
+  }
+
+  const devices = parseAvfoundationAudioDevices(result.stderr);
+  printAvailableSources();
+  console.log("");
+  console.log("AVFoundation audio devices (use the name or index with --audio-device):");
+  if (devices.length === 0) {
+    console.log("  (none found)");
+  }
+
+  for (const device of devices) {
+    console.log(`  [${device.index}] ${device.name}`);
+  }
+
+  console.log("");
+  console.log("To stream what your Mac plays, route its output to a loopback device such as BlackHole and capture that.");
+}
+
+async function listPipeWireNodes(pwDumpPath: string): Promise<void> {
+  const { parsePwDump, isApplicationOutput } = await import("./pipewire.ts");
+  printAvailableSources();
+  console.log("");
+
+  let result: CapturedCommandResult;
+  try {
+    result = await runCommandCapture(pwDumpPath, []);
+  } catch (captureError) {
+    warn(
+      captureError instanceof CommandNotFoundError
+        ? `PipeWire node listing is unavailable because "${pwDumpPath}" was not found.`
+        : `PipeWire node listing is unavailable: ${String(captureError)}`,
+    );
+    return;
+  }
+
+  if (result.code !== 0) {
+    warn(`PipeWire node listing is unavailable: ${result.stderr.trim() || `exit code ${result.code ?? "null"}`}`);
+    return;
+  }
+
+  const nodes = parsePwDump(result.stdout);
+  const print = (title: string, rows: string[]): void => {
+    console.log(title);
+    console.log(rows.length > 0 ? rows.join("\n") : "  (none found)");
+    console.log("");
+  };
+
+  print(
+    "Output devices (captures what they play):",
+    nodes.filter((node) => node.mediaClass === "Audio/Sink").map((node) => `  ${node.name}  (${node.description})`),
+  );
+  print(
+    "Input devices:",
+    nodes
+      .filter((node) => node.mediaClass.startsWith("Audio/Source"))
+      .map((node) => `  ${node.name}  (${node.description})`),
+  );
+  print(
+    "Applications currently playing (capture by application name):",
+    [
+      ...new Set(
+        nodes
+          .filter(isApplicationOutput)
+          .map((node) => `  ${node.applicationName || node.name}${node.mediaName ? `  (${node.mediaName})` : ""}`),
+      ),
+    ],
+  );
+  console.log("Without --audio-device, the pipewire source captures the default output device.");
+}
+
+async function listWindowsLoopbackDevices(powershellPath: string): Promise<void> {
+  const { runLoopbackHelper, parseLoopbackDeviceList } = await import("./windows-loopback.ts");
+  const result = await runLoopbackHelper(powershellPath, "list");
+  if (result.code !== 0) {
+    throw new Error(`failed to list Windows output devices: ${result.stderr.trim() || `exit code ${result.code ?? "null"}`}`);
+  }
+
+  printAvailableSources();
+  console.log("");
+  console.log("Windows output devices (use the name with --audio-device; default is used when omitted):");
+  const devices = parseLoopbackDeviceList(result.stdout);
+  if (devices.length === 0) {
+    console.log("  (none found)");
+  }
+
+  for (const device of devices) {
+    console.log(`  ${device.name}${device.isDefault ? "  [default]" : ""}`);
+  }
+}
+
 export async function listDevices(options: {
   audioSource: AudioSource;
   ffmpegPath: string;
   pactlPath: string;
+  powershellPath: string;
 }): Promise<void> {
   switch (options.audioSource) {
     case "pulse-monitor":
@@ -229,7 +365,30 @@ export async function listDevices(options: {
 
       await listDirectShowAudioDevices(options.ffmpegPath);
       return;
+    case "pipewire":
+      if (process.platform !== "linux") {
+        throw new Error("pipewire source listing is only supported on Linux");
+      }
+
+      await listPipeWireNodes("pw-dump");
+      return;
+    case "windows-loopback":
+      if (process.platform !== "win32") {
+        throw new Error("windows-loopback source listing is only supported on Windows");
+      }
+
+      await listWindowsLoopbackDevices(options.powershellPath);
+      return;
+    case "macos-avfoundation":
+      if (process.platform !== "darwin") {
+        throw new Error("macos-avfoundation source listing is only supported on macOS");
+      }
+
+      await listAvfoundationAudioDevices(options.ffmpegPath);
+      return;
     case "stdin":
+    case "command":
+    case "media":
     case "spotify":
       printAvailableSources();
       console.log("");

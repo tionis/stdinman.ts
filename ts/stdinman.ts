@@ -79,6 +79,7 @@ async function main(argv: string[]): Promise<number> {
         : defaultDeviceListSource(loaded.config.audio_source),
       ffmpegPath: settings.ffmpegPath,
       pactlPath: settings.pactlPath,
+      powershellPath: settings.powershellPath,
     });
     return 0;
   }

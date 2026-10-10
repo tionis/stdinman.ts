@@ -5,18 +5,56 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  binaries:
+    name: binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: macos-latest, target: darwin-arm64 }
+          - { os: windows-latest, target: windows-x64, ext: .exe }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
 
-      - uses: actions/setup-node@v7
+      - run: bun install --frozen-lockfile
+
+      - name: Compile
+        run: bun scripts/compile.ts dist/release/stdinman-${{ matrix.target }}${{ matrix.ext }}
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          bin=dist/release/stdinman-${{ matrix.target }}${{ matrix.ext }}
+          "$bin" --version
+          "$bin" doctor -c does-not-exist.toml | tee doctor.txt || true
+          grep -E "ok +DAVE library" doctor.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stdinman-${{ matrix.target }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  release:
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -39,10 +77,21 @@ jobs:
       - name: Pack
         run: npm pack
 
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+          pattern: stdinman-*
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cp ./*.tgz dist/release/
+          cd dist/release && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" ./*.tgz --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
+        run: gh release create "${GITHUB_REF_NAME}" dist/release/* --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
 
       # Publishes via npm trusted publishing (OIDC, no token; provenance is added automatically).
       # Opt-in: configure this workflow as a trusted publisher on npmjs.com, then set the

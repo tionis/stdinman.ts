@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- New sources:
+  - `media`: plays files, directories (recursively, in name order) and URLs such as internet radio, with `--loop`. Broken inputs are skipped.
+  - `command`: reads PCM or WAV from any command line.
+  - `pipewire`: captures the default output, any device, or a single application by name. It re-attaches when the application starts a new stream.
+  - `windows-loopback`: captures what a Windows output device plays via WASAPI loopback, with no virtual cable needed. It uses a small C# helper that PowerShell compiles at runtime.
+  - `macos-avfoundation`: captures an AVFoundation audio device, such as BlackHole.
+- Follow mode (`--follow-user` / `follow_user_id`): the bot joins the user's voice channel, moves with them, leaves when they leave, and rejoins when they come back.
+- Now-playing activity for `spotify` (via librespot's `--onevent` hook) and `media` (tags and ICY titles). It can be turned off with `--no-now-playing`.
+- Standalone binaries built with `bun build --compile` for Linux x64/arm64, macOS arm64 and Windows x64, attached to GitHub releases with `SHA256SUMS`. Use `bun run compile` to build one locally.
+- stdin and the `command` source now accept `s32le` and `wav` input, plus `--sample-rate` and `--channels`.
+- `doctor` checks that the DAVE library loads and covers the new sources.
+
+### Fixed
+
+- Live sources started streaming after many seconds instead of immediately: ffmpeg probed 5 MB of input first, about 13 s at 48 kHz float and about 30 s for Spotify.
+- `pw-record` no longer falls back to a different device when the target is missing.
+
+### Changed
+
+- Streaming now starts once the bot has joined a channel, for every source.
+- The Spotify Connect device is named after the bot by default (`discord: {bot}`; `{bot}` is replaced with the bot's display name). Config files created by 0.2.0 contain `librespot_name = "stdinman_connect"` explicitly and keep that name; remove the line to get the new default.
+- A capture or command process that exits successfully now ends the stream normally, instead of being reported as an error.
+
 ## 0.2.0
 
 ### Added

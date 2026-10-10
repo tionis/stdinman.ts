@@ -3,8 +3,18 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-export const AUDIO_SOURCES = ["stdin", "spotify", "pulse-monitor", "windows-dshow"] as const;
-export const INPUT_FORMATS = ["f32le", "s16le"] as const;
+export const AUDIO_SOURCES = [
+  "stdin",
+  "command",
+  "media",
+  "spotify",
+  "pulse-monitor",
+  "pipewire",
+  "windows-dshow",
+  "windows-loopback",
+  "macos-avfoundation",
+] as const;
+export const INPUT_FORMATS = ["f32le", "s16le", "s32le", "wav"] as const;
 export const LIBRESPOT_BITRATES = [96, 160, 320] as const;
 
 export type AudioSource = (typeof AUDIO_SOURCES)[number];
@@ -17,11 +27,20 @@ export type StdinmanConfig = {
   audio_source: AudioSource;
   audio_device: string;
   input_format: InputFormat;
+  sample_rate: number;
+  channels: number;
+  inputs: string[];
+  loop: boolean;
+  command: string;
+  follow_user_id: string;
+  now_playing: boolean;
   volume: number;
   opus_bitrate: number;
   ffmpeg_path: string;
   parec_path: string;
   pactl_path: string;
+  pw_record_path: string;
+  powershell_path: string;
   librespot_path: string;
   librespot_name: string;
   librespot_bitrate: number;
@@ -35,19 +54,34 @@ export const DEFAULT_CONFIG: Readonly<StdinmanConfig> = Object.freeze({
   audio_source: "stdin",
   audio_device: "",
   input_format: "f32le",
+  sample_rate: 48_000,
+  channels: 2,
+  inputs: [],
+  loop: false,
+  command: "",
+  follow_user_id: "",
+  now_playing: true,
   volume: 1,
   // 0 lets libopus pick its default bitrate.
   opus_bitrate: 0,
   ffmpeg_path: "ffmpeg",
   parec_path: "parec",
   pactl_path: "pactl",
+  pw_record_path: "pw-record",
+  powershell_path: "powershell.exe",
   librespot_path: "librespot",
-  librespot_name: "stdinman_connect",
+  // "{bot}" is replaced with the bot's display name.
+  librespot_name: "discord: {bot}",
   librespot_bitrate: 320,
   librespot_args: [],
 });
 
 const CONFIG_KEYS = new Set(Object.keys(DEFAULT_CONFIG));
+
+/** A mutable copy of the defaults. */
+export function defaultConfig(): StdinmanConfig {
+  return { ...DEFAULT_CONFIG, inputs: [], librespot_args: [] };
+}
 
 export class ConfigError extends Error {
   override name = "ConfigError";
@@ -109,11 +143,20 @@ export function parseConfig(text: string): ParsedConfig {
     audio_source: readEnum(parsed, "audio_source", parseAudioSource),
     audio_device: readString(parsed, "audio_device"),
     input_format: readEnum(parsed, "input_format", parseInputFormat),
+    sample_rate: readEnum(parsed, "sample_rate", parseSampleRate),
+    channels: readEnum(parsed, "channels", parseChannels),
+    inputs: readStringArray(parsed, "inputs"),
+    loop: readBoolean(parsed, "loop"),
+    command: readString(parsed, "command"),
+    follow_user_id: readSnowflake(parsed, "follow_user_id"),
+    now_playing: readBoolean(parsed, "now_playing"),
     volume: readEnum(parsed, "volume", parseVolume),
     opus_bitrate: readEnum(parsed, "opus_bitrate", parseOpusBitrate),
     ffmpeg_path: readString(parsed, "ffmpeg_path"),
     parec_path: readString(parsed, "parec_path"),
     pactl_path: readString(parsed, "pactl_path"),
+    pw_record_path: readString(parsed, "pw_record_path"),
+    powershell_path: readString(parsed, "powershell_path"),
     librespot_path: readString(parsed, "librespot_path"),
     librespot_name: readString(parsed, "librespot_name"),
     librespot_bitrate: readEnum(parsed, "librespot_bitrate", parseLibrespotBitrate),
@@ -135,7 +178,7 @@ export async function loadConfig(
     text = await readFile(path, "utf8");
   } catch (readError) {
     if ((readError as NodeJS.ErrnoException).code === "ENOENT") {
-      return { config: { ...DEFAULT_CONFIG, librespot_args: [] }, warnings: [], created };
+      return { config: defaultConfig(), warnings: [], created };
     }
 
     throw readError;
@@ -168,7 +211,7 @@ function readString(
   return value;
 }
 
-function readSnowflake(table: Record<string, unknown>, key: "voice_channel_id"): string {
+function readSnowflake(table: Record<string, unknown>, key: "voice_channel_id" | "follow_user_id"): string {
   const value = table[key];
   // Discord IDs exceed Number.MAX_SAFE_INTEGER, so unquoted IDs arrive as bigint.
   if (typeof value === "bigint") {
@@ -182,7 +225,20 @@ function readSnowflake(table: Record<string, unknown>, key: "voice_channel_id"):
   return readString(table, key);
 }
 
-function readStringArray(table: Record<string, unknown>, key: "librespot_args"): string[] {
+function readBoolean(table: Record<string, unknown>, key: "loop" | "now_playing"): boolean {
+  const value = table[key];
+  if (value === undefined) {
+    return DEFAULT_CONFIG[key];
+  }
+
+  if (typeof value !== "boolean") {
+    throw new ConfigError(`"${key}" must be true or false`);
+  }
+
+  return value;
+}
+
+function readStringArray(table: Record<string, unknown>, key: "librespot_args" | "inputs"): string[] {
   const value = table[key];
   if (value === undefined) {
     return [];
@@ -274,4 +330,22 @@ export function parseOpusBitrate(value: unknown): number {
   }
 
   return bitrate;
+}
+
+export function parseSampleRate(value: unknown): number {
+  const rate = toNumber(value);
+  if (!Number.isInteger(rate) || rate < 8_000 || rate > 384_000) {
+    throw new ConfigError(`invalid sample rate ${JSON.stringify(String(value))}; expected Hz between 8000 and 384000`);
+  }
+
+  return rate;
+}
+
+export function parseChannels(value: unknown): number {
+  const channels = toNumber(value);
+  if (!Number.isInteger(channels) || channels < 1 || channels > 8) {
+    throw new ConfigError(`invalid channel count ${JSON.stringify(String(value))}; expected 1 to 8`);
+  }
+
+  return channels;
 }

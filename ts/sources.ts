@@ -11,6 +11,8 @@ export type FfmpegInputSpec = {
   waitingMessage: string;
 };
 
+export type NowPlayingEvents = { change: [title: string | null] };
+
 export type PreparedAudioSource = {
   stream: Readable;
   ffmpegInput: FfmpegInputSpec;
@@ -18,7 +20,23 @@ export type PreparedAudioSource = {
   stop: () => void;
   startupMessage: string;
   awaitInitialPlayback: boolean;
+  /** Emits "change" with a human readable title (or null) when the playing item changes. */
+  nowPlaying?: EventEmitter<NowPlayingEvents>;
+  /** Pause (rather than discard) audio while the bot is not in a channel. For finite media. */
+  pauseWhenUnheard?: boolean;
 };
+
+export const CAPTURE_SAMPLE_RATE = 48_000;
+export const CAPTURE_CHANNELS = 2;
+
+export function rawPcmInput(
+  format: InputFormat,
+  waitingMessage: string,
+  sampleRate = CAPTURE_SAMPLE_RATE,
+  channels = CAPTURE_CHANNELS,
+): FfmpegInputSpec {
+  return { format, sampleRate, channels, waitingMessage };
+}
 
 /**
  * Reads PCM from `input` (normally process.stdin) but discards everything until
@@ -26,7 +44,7 @@ export type PreparedAudioSource = {
  * dropped instead of being played late.
  */
 export function createSwitchingStdinStream(
-  inputFormat: InputFormat,
+  pcm: { inputFormat: InputFormat; sampleRate: number; channels: number },
   input: NodeJS.ReadableStream = process.stdin,
 ): PreparedAudioSource {
   const output = new PassThrough();
@@ -70,12 +88,12 @@ export function createSwitchingStdinStream(
 
   return {
     stream: output,
-    ffmpegInput: {
-      format: inputFormat,
-      sampleRate: 48_000,
-      channels: 2,
-      waitingMessage: `ffmpeg has not produced any opus packets yet. Make sure raw ${inputFormat} PCM (48 kHz stereo) is being piped into stdin.`,
-    },
+    ffmpegInput: rawPcmInput(
+      pcm.inputFormat,
+      `ffmpeg has not produced any opus packets yet. Make sure ${describePcm(pcm)} audio is being piped into stdin.`,
+      pcm.sampleRate,
+      pcm.channels,
+    ),
     start: (): void => {
       forwarding = true;
     },
@@ -88,23 +106,45 @@ export function createSwitchingStdinStream(
   };
 }
 
+export function describePcm(pcm: { inputFormat: InputFormat; sampleRate: number; channels: number }): string {
+  return pcm.inputFormat === "wav"
+    ? "WAV"
+    : `raw ${pcm.inputFormat} PCM (${pcm.sampleRate} Hz, ${pcm.channels} channel${pcm.channels === 1 ? "" : "s"})`;
+}
+
 export function createProcessAudioSource(options: {
   command: string;
   args: string[];
+  /** Run the command through the system shell (for user supplied command lines). */
+  shell?: boolean;
   ffmpegInput: FfmpegInputSpec;
   startupMessage: string;
   startedMessage: string;
   logPrefix: string;
   awaitInitialPlayback: boolean;
+  /** Called for every stderr line; return true to suppress the debug log for that line. */
+  onStderrLine?: (line: string) => boolean;
+  nowPlaying?: EventEmitter<NowPlayingEvents>;
+  /** Called once the source has stopped or failed, e.g. to remove temporary files. */
+  cleanup?: () => void;
 }): PreparedAudioSource {
   const output = new PassThrough();
   const stderrTail = new LineTail();
   let child: ChildProcess | undefined;
   let stopping = false;
+  let cleanedUp = false;
+  const cleanup = (): void => {
+    if (!cleanedUp) {
+      cleanedUp = true;
+      options.cleanup?.();
+    }
+  };
+  output.once("close", cleanup);
 
   return {
     stream: output,
     ffmpegInput: options.ffmpegInput,
+    nowPlaying: options.nowPlaying,
     start: (): void => {
       if (child || stopping) {
         return;
@@ -114,6 +154,7 @@ export function createProcessAudioSource(options: {
       child = spawn(options.command, options.args, {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
+        shell: options.shell,
       });
 
       const stdout = child.stdout;
@@ -126,7 +167,9 @@ export function createProcessAudioSource(options: {
       stderr.setEncoding("utf8");
       stderr.on("data", (chunk: string) => {
         for (const line of stderrTail.push(chunk)) {
-          debug(`[${options.logPrefix}] ${line}`);
+          if (!options.onStderrLine?.(line)) {
+            debug(`[${options.logPrefix}] ${line}`);
+          }
         }
       });
       child.on("spawn", () => {
@@ -139,7 +182,12 @@ export function createProcessAudioSource(options: {
         );
       });
       child.on("close", (code, signal) => {
-        if (stopping) {
+        cleanup();
+        if (stopping || code === 0) {
+          // A clean exit ends the audio like EOF on stdin.
+          if (!stopping) {
+            info(`${options.logPrefix} finished`);
+          }
           output.end();
           return;
         }
@@ -160,6 +208,7 @@ export function createProcessAudioSource(options: {
       stopping = true;
       output.end();
       if (!child) {
+        cleanup();
         return;
       }
 
@@ -173,44 +222,6 @@ export function createProcessAudioSource(options: {
   };
 }
 
-export function librespotArgs(options: {
-  librespotName: string;
-  librespotBitrate: number;
-  librespotArgs: string[];
-}): string[] {
-  return [
-    "-n",
-    options.librespotName,
-    "--backend",
-    "pipe",
-    "-b",
-    String(options.librespotBitrate),
-    ...options.librespotArgs,
-  ];
-}
-
-export function createSpotifySource(options: {
-  librespotPath: string;
-  librespotName: string;
-  librespotBitrate: number;
-  librespotArgs: string[];
-}): PreparedAudioSource {
-  return createProcessAudioSource({
-    command: options.librespotPath,
-    args: librespotArgs(options),
-    ffmpegInput: {
-      format: "s16le",
-      sampleRate: 44_100,
-      channels: 2,
-      waitingMessage: `ffmpeg is still waiting for Spotify audio. Start playback on the Spotify Connect device "${options.librespotName}" if you have not already.`,
-    },
-    startupMessage: `starting librespot and waiting for Spotify playback on device "${options.librespotName}"`,
-    startedMessage: `librespot started; waiting for Spotify playback on device "${options.librespotName}"`,
-    logPrefix: "librespot",
-    awaitInitialPlayback: false,
-  });
-}
-
 export function parecArgs(audioDevice: string): string[] {
   return ["-d", audioDevice, "--format=float32le", "--rate=48000", "--channels=2", "--latency-msec=20"];
 }
@@ -219,12 +230,10 @@ export function createPulseMonitorSource(options: { parecPath: string; audioDevi
   return createProcessAudioSource({
     command: options.parecPath,
     args: parecArgs(options.audioDevice),
-    ffmpegInput: {
-      format: "f32le",
-      sampleRate: 48_000,
-      channels: 2,
-      waitingMessage: `ffmpeg is still waiting for PulseAudio/PipeWire input from source "${options.audioDevice}". Make sure audio is routed to that source.`,
-    },
+    ffmpegInput: rawPcmInput(
+      "f32le",
+      `ffmpeg is still waiting for PulseAudio/PipeWire input from source "${options.audioDevice}". Make sure audio is routed to that source.`,
+    ),
     startupMessage: `starting PulseAudio/PipeWire capture from source "${options.audioDevice}"`,
     startedMessage: `PulseAudio/PipeWire capture started from source "${options.audioDevice}"`,
     logPrefix: "parec",
@@ -270,15 +279,100 @@ export function createWindowsDshowSource(options: { ffmpegPath: string; audioDev
   return createProcessAudioSource({
     command: options.ffmpegPath,
     args: directShowCaptureArgs(options.audioDevice),
-    ffmpegInput: {
-      format: "f32le",
-      sampleRate: 48_000,
-      channels: 2,
-      waitingMessage: `ffmpeg is still waiting for DirectShow input from "${options.audioDevice}". Make sure the capture device is active and producing audio.`,
-    },
+    ffmpegInput: rawPcmInput(
+      "f32le",
+      `ffmpeg is still waiting for DirectShow input from "${options.audioDevice}". Make sure the capture device is active and producing audio.`,
+    ),
     startupMessage: `starting DirectShow capture from audio device "${options.audioDevice}"`,
     startedMessage: `DirectShow capture started from audio device "${options.audioDevice}"`,
     logPrefix: "ffmpeg-dshow",
+    awaitInitialPlayback: false,
+  });
+}
+
+export function createCommandSource(options: {
+  command: string;
+  inputFormat: InputFormat;
+  sampleRate: number;
+  channels: number;
+}): PreparedAudioSource {
+  return createProcessAudioSource({
+    command: options.command,
+    args: [],
+    shell: true,
+    ffmpegInput: rawPcmInput(
+      options.inputFormat,
+      `ffmpeg is still waiting for audio from the command. Make sure it writes ${describePcm(options)} to stdout.`,
+      options.sampleRate,
+      options.channels,
+    ),
+    startupMessage: `starting command: ${options.command}`,
+    startedMessage: "command started",
+    logPrefix: "command",
+    awaitInitialPlayback: false,
+  });
+}
+
+export function pwRecordArgs(target: string): string[] {
+  return [
+    "--raw",
+    "--format",
+    "f32",
+    "--rate",
+    String(CAPTURE_SAMPLE_RATE),
+    "--channels",
+    String(CAPTURE_CHANNELS),
+    "--latency",
+    "20ms",
+    "--media-category",
+    "Capture",
+    "-P",
+    "node.name=stdinman",
+    // Capture the monitor when the target is a sink (or, without a target, the default sink).
+    "-P",
+    "stream.capture.sink=true",
+    // Never silently fall back to another device if the target is missing.
+    "-P",
+    "node.dont-fallback=true",
+    ...(target ? ["--target", target] : []),
+    "-",
+  ];
+}
+
+export function avfoundationCaptureArgs(audioDevice: string, debugEnabled = isDebugEnabled()): string[] {
+  return [
+    "-hide_banner",
+    "-nostdin",
+    "-loglevel",
+    debugEnabled ? "warning" : "error",
+    "-f",
+    "avfoundation",
+    "-i",
+    `:${audioDevice}`,
+    "-vn",
+    "-acodec",
+    "pcm_f32le",
+    "-ar",
+    String(CAPTURE_SAMPLE_RATE),
+    "-ac",
+    String(CAPTURE_CHANNELS),
+    "-f",
+    "f32le",
+    "pipe:1",
+  ];
+}
+
+export function createAvfoundationSource(options: { ffmpegPath: string; audioDevice: string }): PreparedAudioSource {
+  return createProcessAudioSource({
+    command: options.ffmpegPath,
+    args: avfoundationCaptureArgs(options.audioDevice),
+    ffmpegInput: rawPcmInput(
+      "f32le",
+      `ffmpeg is still waiting for AVFoundation input from "${options.audioDevice}". Make sure audio is routed to that device and that the terminal has microphone permission.`,
+    ),
+    startupMessage: `starting AVFoundation capture from audio device "${options.audioDevice}"`,
+    startedMessage: `AVFoundation capture started from audio device "${options.audioDevice}"`,
+    logPrefix: "ffmpeg-avfoundation",
     awaitInitialPlayback: false,
   });
 }
@@ -296,16 +390,16 @@ export function ffmpegOpusArgs(
   return [
     "-hide_banner",
     "-nostdin",
+    // The input format is known, so skip probing: the default 5 MB probe delays live audio by many seconds.
+    "-probesize",
+    "32",
     "-analyzeduration",
     "0",
     "-loglevel",
     debugEnabled ? "warning" : "error",
-    "-f",
-    ffmpegInput.format,
-    "-ar",
-    String(ffmpegInput.sampleRate),
-    "-ac",
-    String(ffmpegInput.channels),
+    ...(ffmpegInput.format === "wav"
+      ? ["-f", "wav", "-ignore_length", "1"]
+      : ["-f", ffmpegInput.format, "-ar", String(ffmpegInput.sampleRate), "-ac", String(ffmpegInput.channels)]),
     "-i",
     "pipe:0",
     "-map",

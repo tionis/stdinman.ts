@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ConfigError,
-  DEFAULT_CONFIG,
+  defaultConfig,
   loadConfig,
   parseConfig,
   parseLibrespotBitrate,
@@ -17,12 +17,12 @@ import {
 describe("parseConfig", () => {
   test("empty document yields defaults", () => {
     const { config, warnings } = parseConfig("");
-    expect(config).toEqual({ ...DEFAULT_CONFIG, librespot_args: [] });
+    expect(config).toEqual(defaultConfig());
     expect(warnings).toEqual([]);
   });
 
   test("generated default config round-trips", () => {
-    expect(parseConfig(renderDefaultConfig()).config).toEqual({ ...DEFAULT_CONFIG, librespot_args: [] });
+    expect(parseConfig(renderDefaultConfig()).config).toEqual(defaultConfig());
   });
 
   test("reads all supported keys", () => {
@@ -52,6 +52,25 @@ librespot_args = ["--initial-volume", "50"]
     expect(parseConfig("voice_channel_id = 1234567890123456789").config.voice_channel_id).toBe("1234567890123456789");
   });
 
+  test("reads source and follow settings", () => {
+    const { config } = parseConfig(`
+inputs = ["a.mp3", "https://example.com/stream"]
+loop = true
+command = "arecord -f S16_LE"
+sample_rate = 44100
+channels = 1
+follow_user_id = 123456789012345678
+now_playing = false
+`);
+    expect(config.inputs).toEqual(["a.mp3", "https://example.com/stream"]);
+    expect(config.loop).toBe(true);
+    expect(config.command).toBe("arecord -f S16_LE");
+    expect(config.sample_rate).toBe(44100);
+    expect(config.channels).toBe(1);
+    expect(config.follow_user_id).toBe("123456789012345678");
+    expect(config.now_playing).toBe(false);
+  });
+
   test("rejects small numeric channel IDs with a hint to quote them", () => {
     expect(() => parseConfig("voice_channel_id = 42")).toThrow(/quoted string/);
   });
@@ -68,7 +87,11 @@ librespot_args = ["--initial-volume", "50"]
 
   test.each([
     ['audio_source = "spotfy"', /audio_source/],
-    ['input_format = "wav"', /input_format/],
+    ['input_format = "mp3"', /input_format/],
+    ["sample_rate = 100", /sample_rate/],
+    ["channels = 0", /channels/],
+    ['loop = "yes"', /loop/],
+    ["inputs = [1]", /inputs/],
     ["librespot_bitrate = 128", /librespot_bitrate/],
     ['librespot_args = "--foo"', /librespot_args/],
     ["bot_token = 5", /bot_token/],

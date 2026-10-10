@@ -1,13 +1,14 @@
 import { parseArgs } from "node:util";
 import {
-  AUDIO_SOURCES,
   type AudioSource,
   ConfigError,
   type InputFormat,
   LIBRESPOT_BITRATES,
   type StdinmanConfig,
   parseAudioSource,
+  parseChannels,
   parseInputFormat,
+  parseSampleRate,
   parseLibrespotBitrate,
   parseOpusBitrate,
   parseVolume,
@@ -26,11 +27,21 @@ const OPTIONS = {
   source: { type: "string", short: "s" },
   spotify: { type: "boolean" },
   "input-format": { type: "string" },
+  "sample-rate": { type: "string" },
+  channels: { type: "string" },
+  input: { type: "string", short: "i", multiple: true },
+  loop: { type: "boolean" },
+  command: { type: "string" },
+  "follow-user": { type: "string" },
+  "now-playing": { type: "boolean" },
+  "no-now-playing": { type: "boolean" },
   volume: { type: "string" },
   "opus-bitrate": { type: "string" },
   "ffmpeg-path": { type: "string" },
   "parec-path": { type: "string" },
   "pactl-path": { type: "string" },
+  "pw-record-path": { type: "string" },
+  "powershell-path": { type: "string" },
   "librespot-path": { type: "string" },
   "librespot-name": { type: "string" },
   "librespot-bitrate": { type: "string" },
@@ -108,11 +119,20 @@ export type Settings = {
   audioSource: AudioSource;
   audioDevice: string;
   inputFormat: InputFormat;
+  sampleRate: number;
+  channels: number;
+  inputs: string[];
+  loop: boolean;
+  command: string;
+  followUserId: string;
+  nowPlaying: boolean;
   volume: number;
   opusBitrate: number;
   ffmpegPath: string;
   parecPath: string;
   pactlPath: string;
+  pwRecordPath: string;
+  powershellPath: string;
   librespotPath: string;
   librespotName: string;
   librespotBitrate: number;
@@ -162,19 +182,46 @@ export function resolveSettings(
   const audioSource =
     parseFlag("source", values.spotify ? "spotify" : values.source, parseAudioSource) ?? config.audio_source;
 
+  if (values["now-playing"] && values["no-now-playing"]) {
+    throw new UsageError("--now-playing conflicts with --no-now-playing");
+  }
+
+  // The voice target is either a fixed channel or a user to follow. A value set on a
+  // higher-precedence layer (CLI > env > config) replaces the other mode from lower layers.
+  const layers = [
+    { channel: values["voice-channel-id"], follow: values["follow-user"] },
+    { channel: nonEmpty(env.STDINMAN_VOICE_CHANNEL_ID), follow: nonEmpty(env.STDINMAN_FOLLOW_USER_ID) },
+    { channel: nonEmpty(config.voice_channel_id), follow: nonEmpty(config.follow_user_id) },
+  ];
+  const targetLayer = layers.find((layer) => layer.channel || layer.follow);
+  if (targetLayer?.channel && targetLayer.follow) {
+    warnings.push("both a voice channel and a user to follow are set; following the user");
+  }
+
+  const followUserId = targetLayer?.follow ?? "";
+  const voiceChannelId = followUserId ? "" : (targetLayer?.channel ?? "");
+
   const settings: Settings = {
     botToken: values["bot-token"] ?? nonEmpty(env.STDINMAN_BOT_TOKEN) ?? config.bot_token,
-    voiceChannelId:
-      values["voice-channel-id"] ?? nonEmpty(env.STDINMAN_VOICE_CHANNEL_ID) ?? config.voice_channel_id,
+    voiceChannelId,
     botActivity: values["bot-activity"] ?? config.bot_activity,
     audioSource,
     audioDevice: values["audio-device"] ?? config.audio_device,
     inputFormat: parseFlag("input-format", values["input-format"], parseInputFormat) ?? config.input_format,
+    sampleRate: parseFlag("sample-rate", values["sample-rate"], parseSampleRate) ?? config.sample_rate,
+    channels: parseFlag("channels", values.channels, parseChannels) ?? config.channels,
+    inputs: values.input ?? config.inputs,
+    loop: values.loop ?? config.loop,
+    command: values.command ?? config.command,
+    followUserId,
+    nowPlaying: values["no-now-playing"] ? false : (values["now-playing"] ?? config.now_playing),
     volume: parseFlag("volume", values.volume, parseVolume) ?? config.volume,
     opusBitrate: parseFlag("opus-bitrate", values["opus-bitrate"], parseOpusBitrate) ?? config.opus_bitrate,
     ffmpegPath: values["ffmpeg-path"] ?? config.ffmpeg_path,
     parecPath: values["parec-path"] ?? config.parec_path,
     pactlPath: values["pactl-path"] ?? config.pactl_path,
+    pwRecordPath: values["pw-record-path"] ?? config.pw_record_path,
+    powershellPath: values["powershell-path"] ?? config.powershell_path,
     librespotPath: values["librespot-path"] ?? config.librespot_path,
     librespotName: values["librespot-name"] ?? config.librespot_name,
     librespotBitrate:
@@ -182,14 +229,35 @@ export function resolveSettings(
     librespotArgs: values["librespot-arg"] ?? config.librespot_args,
   };
 
-  if (settings.voiceChannelId && !/^\d{17,20}$/.test(settings.voiceChannelId)) {
+  if (settings.voiceChannelId && !SNOWFLAKE.test(settings.voiceChannelId)) {
     throw new UsageError(
       `voice channel ID "${settings.voiceChannelId}" does not look like a Discord ID (enable Developer Mode in Discord and use "Copy Channel ID")`,
     );
   }
 
-  if (audioSource !== "stdin" && values["input-format"]) {
-    warnings.push(`ignoring --input-format because the ${audioSource} source does not read raw stdin PCM`);
+  if (settings.followUserId && !SNOWFLAKE.test(settings.followUserId)) {
+    throw new UsageError(
+      `user ID "${settings.followUserId}" does not look like a Discord ID (enable Developer Mode in Discord and use "Copy User ID")`,
+    );
+  }
+
+  const readsPcm = audioSource === "stdin" || audioSource === "command";
+  for (const flag of ["input-format", "sample-rate", "channels"] as const) {
+    if (!readsPcm && values[flag]) {
+      warnings.push(`ignoring --${flag} because the ${audioSource} source does not read raw PCM`);
+    }
+  }
+
+  if (audioSource !== "media" && values.input) {
+    warnings.push("ignoring --input because the selected source is not media");
+  }
+
+  if (audioSource !== "media" && values.loop) {
+    warnings.push("ignoring --loop because the selected source is not media");
+  }
+
+  if (audioSource !== "command" && values.command) {
+    warnings.push("ignoring --command because the selected source is not command");
   }
 
   if (
@@ -206,8 +274,29 @@ export function resolveSettings(
   return { settings, warnings };
 }
 
+const SNOWFLAKE = /^\d{17,20}$/;
+
+const SOURCE_PLATFORMS: Partial<Record<AudioSource, { platform: NodeJS.Platform; name: string }>> = {
+  "pulse-monitor": { platform: "linux", name: "Linux" },
+  pipewire: { platform: "linux", name: "Linux" },
+  "windows-dshow": { platform: "win32", name: "Windows" },
+  "windows-loopback": { platform: "win32", name: "Windows" },
+  "macos-avfoundation": { platform: "darwin", name: "macOS" },
+};
+
 export function sourceUsesDevice(source: AudioSource): boolean {
-  return source === "pulse-monitor" || source === "windows-dshow";
+  return (
+    source === "pulse-monitor" ||
+    source === "pipewire" ||
+    source === "windows-dshow" ||
+    source === "windows-loopback" ||
+    source === "macos-avfoundation"
+  );
+}
+
+/** Sources where --audio-device is mandatory (the others fall back to the default device). */
+export function sourceRequiresDevice(source: AudioSource): boolean {
+  return source === "pulse-monitor" || source === "windows-dshow" || source === "macos-avfoundation";
 }
 
 /** Throws a UsageError if the settings cannot be used to start streaming. */
@@ -218,21 +307,26 @@ export function validateRunSettings(settings: Settings, configPath: string, plat
     );
   }
 
-  if (!settings.voiceChannelId) {
+  if (!settings.voiceChannelId && !settings.followUserId) {
     throw new UsageError(
-      `missing voice channel ID. Pass --voice-channel-id, set STDINMAN_VOICE_CHANNEL_ID, or add voice_channel_id to ${configPath}`,
+      `missing voice channel. Pass --voice-channel-id or --follow-user, or add voice_channel_id or follow_user_id to ${configPath}`,
     );
   }
 
-  if (settings.audioSource === "pulse-monitor" && platform !== "linux") {
-    throw new UsageError("the pulse-monitor source is only supported on Linux");
+  const requiredPlatform = SOURCE_PLATFORMS[settings.audioSource];
+  if (requiredPlatform && platform !== requiredPlatform.platform) {
+    throw new UsageError(`the ${settings.audioSource} source is only supported on ${requiredPlatform.name}`);
   }
 
-  if (settings.audioSource === "windows-dshow" && platform !== "win32") {
-    throw new UsageError("the windows-dshow source is only supported on Windows");
+  if (settings.audioSource === "media" && settings.inputs.length === 0) {
+    throw new UsageError(`source "media" requires at least one --input (file, directory or URL) or inputs in ${configPath}`);
   }
 
-  if (sourceUsesDevice(settings.audioSource) && !settings.audioDevice) {
+  if (settings.audioSource === "command" && !settings.command) {
+    throw new UsageError(`source "command" requires --command or command in ${configPath}`);
+  }
+
+  if (sourceRequiresDevice(settings.audioSource) && !settings.audioDevice) {
     throw new UsageError(
       `source "${settings.audioSource}" requires --audio-device or audio_device in ${configPath} (run "stdinman devices list" to see available devices)`,
     );
@@ -253,12 +347,16 @@ export function defaultDeviceListSource(configured: AudioSource, platform = proc
     return "windows-dshow";
   }
 
+  if (platform === "darwin") {
+    return "macos-avfoundation";
+  }
+
   return configured;
 }
 
 export function helpText(version: string): string {
   return `stdinman ${version}
-Stream audio into a Discord voice channel through a bot.
+Stream audio from this computer into a Discord voice channel through a bot.
 
 Usage:
   stdinman [OPTIONS]                 Join the voice channel and start streaming
@@ -269,20 +367,34 @@ Usage:
 
 Connection:
   --bot-token <TOKEN>          Discord bot token (env: STDINMAN_BOT_TOKEN)
-  --voice-channel-id <ID>      Target voice or stage channel (env: STDINMAN_VOICE_CHANNEL_ID)
+  --voice-channel-id <ID>      Voice or stage channel to join (env: STDINMAN_VOICE_CHANNEL_ID)
+  --follow-user <USER_ID>      Instead, follow this user between voice channels: join when they
+                               join, move with them, leave when they leave (env: STDINMAN_FOLLOW_USER_ID)
   --bot-activity <TEXT>        Activity shown on the bot's profile
+  --[no-]now-playing           Show the current track as the bot's activity (default: on)
+
+Sources (-s, --source <SOURCE>, default: stdin):
+  stdin                        Raw PCM or WAV piped into stdin
+  command                      Raw PCM or WAV from --command <CMDLINE> (run through the shell)
+  media                        Files, directories or URLs from -i/--input (repeatable); --loop to repeat
+  spotify                      Spotify Connect via librespot (--spotify is a shorthand)
+  pulse-monitor                PulseAudio/PipeWire source via parec (Linux, needs --audio-device)
+  pipewire                     PipeWire device or application via pw-record (Linux, default: output)
+  windows-dshow                DirectShow capture device via ffmpeg (Windows, needs --audio-device)
+  windows-loopback             What a Windows output device plays (Windows, default: output)
+  macos-avfoundation           AVFoundation audio device via ffmpeg (macOS, needs --audio-device)
 
 Audio:
-  -s, --source <SOURCE>        ${AUDIO_SOURCES.join(" | ")} (default: stdin)
-  --spotify                    Shorthand for --source spotify
-  -d, --audio-device <NAME>    Capture device for pulse-monitor / windows-dshow
-  --input-format <FORMAT>      Raw stdin PCM format: f32le | s16le (48 kHz stereo)
+  -d, --audio-device <NAME>    Device (or, for pipewire, application) to capture
+  --input-format <FORMAT>      stdin/command format: f32le | s16le | s32le | wav (default: f32le)
+  --sample-rate <HZ>           stdin/command sample rate (default: 48000)
+  --channels <N>               stdin/command channel count (default: 2)
   --volume <FACTOR>            Volume multiplier, 0-10 (default: 1)
   --opus-bitrate <KBPS>        Opus bitrate in kbit/s, 6-510 (default: encoder default)
 
 Spotify (librespot):
   --librespot-path <PATH>      librespot binary (default: librespot)
-  --librespot-name <NAME>      Spotify Connect device name (default: stdinman_connect)
+  --librespot-name <NAME>      Spotify Connect device name; {bot} is the bot's name (default: "discord: {bot}")
   --librespot-bitrate <KBPS>   ${LIBRESPOT_BITRATES.join(" | ")} (default: 320)
   --librespot-arg <ARG>        Extra librespot argument (repeatable)
 
@@ -290,6 +402,8 @@ Tools:
   --ffmpeg-path <PATH>         ffmpeg binary (default: ffmpeg)
   --parec-path <PATH>          parec binary (default: parec)
   --pactl-path <PATH>          pactl binary (default: pactl)
+  --pw-record-path <PATH>      pw-record binary (default: pw-record)
+  --powershell-path <PATH>     PowerShell for windows-loopback (default: powershell.exe)
 
 General:
   -c, --config <PATH>          Config file (env: STDINMAN_CONFIG)

@@ -44,7 +44,8 @@
     "start": "node ./dist/stdinman.js",
     "check": "tsc --noEmit",
     "test": "bun test",
-    "prepack": "bun run build"
+    "prepack": "bun run build",
+    "compile": "bun scripts/compile.ts"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

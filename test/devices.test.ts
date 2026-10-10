@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   CommandNotFoundError,
   isMonitorSourceName,
+  parseAvfoundationAudioDevices,
   parseDirectShowAudioDevices,
   parsePulseSources,
   runCommandCapture,
@@ -57,6 +58,20 @@ dummy: Immediate exit requested`;
   test("no devices", () => {
     expect(parseDirectShowAudioDevices("Could not enumerate audio only devices (or none found).")).toEqual([]);
   });
+});
+
+test("parseAvfoundationAudioDevices", () => {
+  const stderr = `[AVFoundation indev @ 0x7f8] AVFoundation video devices:
+[AVFoundation indev @ 0x7f8] [0] FaceTime HD Camera
+[AVFoundation indev @ 0x7f8] [1] Capture screen 0
+[AVFoundation indev @ 0x7f8] AVFoundation audio devices:
+[AVFoundation indev @ 0x7f8] [0] BlackHole 2ch
+[AVFoundation indev @ 0x7f8] [1] MacBook Pro Microphone
+: Input/output error`;
+  expect(parseAvfoundationAudioDevices(stderr)).toEqual([
+    { index: "0", name: "BlackHole 2ch" },
+    { index: "1", name: "MacBook Pro Microphone" },
+  ]);
 });
 
 describe("runCommandCapture", () => {
