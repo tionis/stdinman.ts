@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-10)
 
 ### Added
 
@@ -21,15 +21,15 @@
 
 - Live capture had small audible gaps: audio arrived just in time, so any timing jitter made the player miss 20 ms frames (2–9 per 10 s in measurements). A 150 ms jitter buffer now absorbs this, bringing it to zero in the same measurements.
 - Live capture sources (`pipewire`, `pulse-monitor`, `windows-dshow`, `windows-loopback`, `macos-avfoundation`) slowly gained latency: the capture device's clock and the system clock that paces Discord playback never match exactly. A drift guard now drops about 150–250 ms of audio whenever more than 400 ms has built up. With typical clock differences, that happens roughly every 25 minutes to 2 hours.
-- `stdin` and `command` are now held to real time as well, so `cat song.raw | stdinman` or a decoder without `-re` plays correctly without reading the whole input into memory. Under Bun, stdin is read through a pull-based file stream, and `command` output through a FIFO.
+- `stdin` and `command` are now held to real time as well, so `cat song.raw | stdinman` or a decoder without `-re` plays correctly without reading the whole input into memory. Under Bun, stdin is read through a pull-based file stream, and `command` output through a FIFO or named pipe.
 - Under Bun (`bun run`, and the standalone binaries), Spotify ignored pause and song changes: Bun reads child process output eagerly regardless of backpressure, so librespot decoded at about 100× real time and over an hour of audio queued up in memory. Fast sources (librespot, the media decoder, `command`) now write into a FIFO (Linux, macOS) or a named pipe (Windows) that stdinman reads only as fast as audio is played.
 - Pausing, skipping and seeking in Spotify took many seconds to be heard: librespot's pipe backend runs faster than real time, so 13 s (under Node) to several minutes (under Bun / the standalone binary) of audio piled up in pipes and ffmpeg. Spotify and media audio is now released no faster than Discord plays it, which keeps the delay below a second.
-
 - Spotify played quietly and thin: librespot defaulted to 50% volume, which is −30 dB on its log volume curve, with 16-bit dithered output. stdinman now starts it at 100% and uses 32-bit float output. The app's volume slider still works.
 - Extra librespot arguments that clash with options stdinman sets itself (name, backend, bitrate, format) are rejected with a clear message. Before, librespot failed on the duplicate option.
-
 - Live sources started streaming after many seconds instead of immediately: ffmpeg probed 5 MB of input first, about 13 s at 48 kHz float and about 30 s for Spotify.
 - `pw-record` no longer falls back to a different device when the target is missing.
+- Child processes (librespot, ffmpeg, capture tools) are killed on every exit path, including a second Ctrl+C, crashes and a closed terminal (SIGHUP). Before, a leftover librespot could keep announcing the Spotify Connect device.
+- librespot warnings and errors are always shown (each distinct message once), not only with `-v`.
 
 ### Changed
 

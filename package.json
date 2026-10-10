@@ -1,6 +1,6 @@
 {
   "name": "stdinman.ts",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pipe audio sources to Discord voice with a bot using discord.js and DAVE-capable @discordjs/voice.",
   "type": "module",
   "author": "tionis.dev",
