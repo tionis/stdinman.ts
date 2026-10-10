@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      discord:
+        patterns: ["discord.js", "@discordjs/*", "@snazzah/davey"]
+      dev-dependencies:
+        dependency-type: development
+    ignore:
+      # TypeScript 7 (native compiler) is a separate migration.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

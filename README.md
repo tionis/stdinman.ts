@@ -1,6 +1,8 @@
 # stdinman.ts
 
-`stdinman.ts` is a standalone TypeScript implementation of `stdinman`: a tool that streams audio to a Discord voice channel through a bot.
+[![CI](https://github.com/tionis/stdinman.ts/actions/workflows/ci.yml/badge.svg)](https://github.com/tionis/stdinman.ts/actions/workflows/ci.yml)
+
+`stdinman.ts` streams audio into a Discord voice or stage channel through a bot. It is a standalone TypeScript implementation of `stdinman`.
 
 This project was extracted from the TypeScript/DAVE-capable implementation inside the original [`ckcr4lyf/stdinman`](https://github.com/ckcr4lyf/stdinman) repository. The original project established the idea and shipped the earlier Rust implementation; this repository focuses only on the maintained TypeScript runtime.
 
@@ -10,120 +12,129 @@ Authors:
 
 ## What It Does
 
-`stdinman.ts` connects a Discord bot to a target voice channel and streams audio from one of several source modes:
+`stdinman.ts` connects a Discord bot to a voice channel and streams audio from one of these sources:
 
-- `stdin`: read raw PCM from standard input
-- `spotify`: spawn `librespot` and stream Spotify Connect audio
-- `pulse-monitor`: capture a PulseAudio / PipeWire source via `parec` on Linux
-- `windows-dshow`: capture a Windows DirectShow audio device via `ffmpeg`
+| Source          | Platform | What it plays                                               |
+| --------------- | -------- | ----------------------------------------------------------- |
+| `stdin`         | any      | Raw PCM piped into standard input (default)                 |
+| `spotify`       | any      | A Spotify Connect device provided by `librespot`            |
+| `pulse-monitor` | Linux    | A PulseAudio / PipeWire source or monitor, captured with `parec` |
+| `windows-dshow` | Windows  | A DirectShow audio device, captured with `ffmpeg`           |
 
-Internally, the app uses `discord.js` plus `@discordjs/voice` with DAVE support so it can join modern Discord voice channels that require end-to-end encryption.
+It uses `discord.js` and `@discordjs/voice` with DAVE support, so it can join Discord voice channels that require end-to-end encryption. If the voice connection drops, it reconnects with backoff and keeps the audio source running.
 
 ## Requirements
 
-- Node.js `22.12.0` or newer for runtime
-- [Bun](https://bun.sh/) for dependency management and builds
-- `ffmpeg`
+- Node.js `22.12.0` or newer
+- `ffmpeg` with `libopus` support
+- [Bun](https://bun.sh/) only if you build from source
 
-Depending on the selected source mode, you may also need:
+Depending on the source:
 
-- `librespot` for `--source spotify`
-- `parec` and `pactl` for `--source pulse-monitor`
-- a DirectShow-capable audio device for `--source windows-dshow`
+- `librespot` for `spotify`
+- `parec` and `pactl` (e.g. `pulseaudio-utils`) for `pulse-monitor`
+
+Run `stdinman doctor` to check your setup.
 
 ## Installation
+
+Install a release tarball from [GitHub Releases](https://github.com/tionis/stdinman.ts/releases):
+
+```bash
+npm install -g https://github.com/tionis/stdinman.ts/releases/download/v0.2.0/stdinman.ts-0.2.0.tgz
+stdinman --help
+```
+
+Or build from source:
 
 ```bash
 bun install
 bun run build
-```
-
-Run the compiled entrypoint with:
-
-```bash
 node ./dist/stdinman.js --help
 ```
 
 ## Discord Setup
 
-The bot must:
+1. Create an application and bot in the [Discord Developer Portal](https://discord.com/developers/applications) and copy the bot token.
+2. Invite the bot to your server with the `View Channels`, `Connect` and `Speak` permissions.
+3. In Discord, turn on Developer Mode (Settings → Advanced), right-click the voice channel and choose **Copy Channel ID**.
 
-- be added to the target server
-- have the `Connect` and `Speak` voice permissions
-
-You need:
-
-- the bot token
-- the target voice channel ID
-
-## Usage
-
-Basic usage:
+## Quick Start
 
 ```bash
-node ./dist/stdinman.js --bot-token <BOT_TOKEN> --voice-channel-id <VOICE_CHANNEL_ID>
+stdinman config init          # creates the config file and prints its path
+$EDITOR "$(stdinman config path)"   # set bot_token and voice_channel_id
+stdinman doctor               # check that everything is in place
 ```
 
-The app keeps compatibility with the original config location:
-
-```text
-$XDG_CONFIG_HOME/stdinman/stdinman.toml
-```
-
-If the config file does not exist, it will be created automatically.
-
-## Source Modes
-
-`stdin` expects raw PCM on standard input. Default format is `f32le` at 48 kHz stereo.
+Then pick a source:
 
 ```bash
-ffmpeg -re -i sample.mp3 -map 0:a:0 -c:a:0 pcm_f32le -ar 48000 -ac 2 -f f32le - | node ./dist/stdinman.js
+# Play a file through stdin
+ffmpeg -re -i song.mp3 -f f32le -ar 48000 -ac 2 - | stdinman
+
+# Spotify Connect: start playback on the "stdinman_connect" device
+stdinman --spotify
+
+# Linux: stream whatever plays on a PulseAudio/PipeWire sink
+stdinman devices list
+stdinman --source pulse-monitor --audio-device alsa_output.pci-0000_00_1f.3.analog-stereo.monitor
 ```
-
-`spotify` starts `librespot` internally:
-
-```bash
-node ./dist/stdinman.js --source spotify
-```
-
-`pulse-monitor` captures a PulseAudio / PipeWire source directly:
-
-```bash
-node ./dist/stdinman.js devices list --source pulse-monitor
-node ./dist/stdinman.js --source pulse-monitor --audio-device Virtual_Sink.monitor
-```
-
-If `pactl` is unavailable or cannot talk to a Pulse/PipeWire session, device listing degrades to a warning and you can still pass `--audio-device` manually.
-
-`windows-dshow` captures a DirectShow audio device:
 
 ```powershell
-node .\dist\stdinman.js devices list --source windows-dshow
-node .\dist\stdinman.js --source windows-dshow --audio-device "CABLE Output (VB-Audio Virtual Cable)"
+# Windows: stream a DirectShow capture device (e.g. VB-Audio Virtual Cable)
+stdinman devices list
+stdinman --source windows-dshow --audio-device "CABLE Output (VB-Audio Virtual Cable)"
 ```
 
-## Useful Options
+## Commands
 
-- `--source <stdin|spotify|pulse-monitor|windows-dshow>`
-- `--audio-device <DEVICE_NAME>`
-- `--input-format <f32le|s16le>`
-- `--ffmpeg-path <PATH>`
-- `--parec-path <PATH>`
-- `--pactl-path <PATH>`
-- `--librespot-path <PATH>`
-- `--librespot-name <DEVICE_NAME>`
-- `--librespot-bitrate <BITRATE>`
-- `--librespot-arg <ARG>` repeatable
+```text
+stdinman [OPTIONS]                 Join the voice channel and start streaming
+stdinman devices list [--source S] List capture devices for a source
+stdinman doctor [OPTIONS]          Check config and external tools
+stdinman config path               Print the config file location
+stdinman config init               Create the config file if it does not exist
+```
 
-## Config Keys
+## Options
+
+| Option                          | Config key          | Description                                               |
+| ------------------------------- | ------------------- | --------------------------------------------------------- |
+| `--bot-token <TOKEN>`           | `bot_token`         | Discord bot token (env: `STDINMAN_BOT_TOKEN`)             |
+| `--voice-channel-id <ID>`       | `voice_channel_id`  | Target voice/stage channel (env: `STDINMAN_VOICE_CHANNEL_ID`) |
+| `--bot-activity <TEXT>`         | `bot_activity`      | Activity shown on the bot profile                         |
+| `-s, --source <SOURCE>`         | `audio_source`      | `stdin`, `spotify`, `pulse-monitor` or `windows-dshow`    |
+| `--spotify`                     |                     | Same as `--source spotify`                                |
+| `-d, --audio-device <NAME>`     | `audio_device`      | Capture device for `pulse-monitor` / `windows-dshow`      |
+| `--input-format <FORMAT>`       | `input_format`      | stdin PCM format: `f32le` or `s16le` (48 kHz stereo)      |
+| `--volume <FACTOR>`             | `volume`            | Volume multiplier, 0–10 (default 1)                       |
+| `--opus-bitrate <KBPS>`         | `opus_bitrate`      | Opus bitrate in kbit/s, 6–510 (0 = encoder default)       |
+| `--ffmpeg-path <PATH>`          | `ffmpeg_path`       | ffmpeg binary                                             |
+| `--parec-path <PATH>`           | `parec_path`        | parec binary                                              |
+| `--pactl-path <PATH>`           | `pactl_path`        | pactl binary                                              |
+| `--librespot-path <PATH>`       | `librespot_path`    | librespot binary                                          |
+| `--librespot-name <NAME>`       | `librespot_name`    | Spotify Connect device name                               |
+| `--librespot-bitrate <KBPS>`    | `librespot_bitrate` | `96`, `160` or `320`                                      |
+| `--librespot-arg <ARG>`         | `librespot_args`    | Extra librespot argument (repeatable / array)             |
+| `-c, --config <PATH>`           |                     | Config file (env: `STDINMAN_CONFIG`)                      |
+| `-v, --verbose`                 |                     | Debug logging (or `STDINMAN_LOG=debug`)                   |
+
+Settings are taken from CLI flags first, then environment variables, then the config file.
+
+## Config File
+
+The default location is `$XDG_CONFIG_HOME/stdinman/stdinman.toml` (usually `~/.config/stdinman/stdinman.toml`), the same as the original stdinman. The file is created with owner-only permissions the first time you run stdinman, or when you run `stdinman config init`.
 
 ```toml
 bot_token = ""
-voice_channel_id = ""
+voice_channel_id = "123456789012345678"   # quote it
 bot_activity = "stdinman"
 audio_source = "stdin"
 audio_device = ""
 input_format = "f32le"
+volume = 1
+opus_bitrate = 0
 ffmpeg_path = "ffmpeg"
 parec_path = "parec"
 pactl_path = "pactl"
@@ -133,18 +144,37 @@ librespot_bitrate = 320
 librespot_args = []
 ```
 
-## Reconnection Behavior
+Invalid values are reported as errors. Unknown keys produce a warning.
 
-Voice connection failures are retried internally with backoff. The reconnect logic keeps the active audio source and transcoder alive so ordinary Discord voice disconnects do not force a restart of `librespot`, `parec`, or the stdin pipeline.
+## Behavior Notes
+
+- **stdin**: audio that arrives before the bot has joined the channel is dropped, so live streams start in sync. When you pipe a file, use `ffmpeg -re` so it plays in real time. When stdin ends, the bot disconnects and exits.
+- **Silence**: gaps in a live source (for example, Spotify paused) are sent as silence. They do not end the session.
+- **Reconnection**: voice connection failures are retried with exponential backoff (up to 30 s). The audio source and transcoder keep running, so `librespot` and `parec` are not restarted.
+- **Stage channels**: the bot tries to become a speaker. If it cannot, it requests to speak.
+- **Exit codes**: `0` for a normal end, `1` for runtime errors, `2` for usage or config errors.
 
 ## Development
 
 ```bash
-bun run check
-bun run build
+bun install
+bun run check   # typecheck
+bun test        # unit + ffmpeg integration tests (the latter are skipped without ffmpeg)
+bun run build   # bundle to dist/stdinman.js
+bun run dev -- --help
 ```
 
-The main implementation lives in `ts/stdinman.ts`.
+Code layout:
+
+- `ts/stdinman.ts`: entry point and command dispatch
+- `ts/cli.ts`: argument parsing, settings resolution, help text
+- `ts/config.ts`: config file handling and validation
+- `ts/sources.ts`: audio sources and the ffmpeg Opus transcoder
+- `ts/devices.ts`: device listing for PulseAudio/PipeWire and DirectShow
+- `ts/stream.ts`: Discord client, voice connection, and reconnect logic
+- `ts/doctor.ts`: `stdinman doctor`
+
+CI runs the typecheck, tests, and build on Linux, macOS and Windows. To release, bump `version` in `package.json`, update `CHANGELOG.md`, and push a `vX.Y.Z` tag. The release workflow attaches the npm tarball to a GitHub release, and also publishes to npm if an `NPM_TOKEN` secret is configured.
 
 ## Attribution
 
