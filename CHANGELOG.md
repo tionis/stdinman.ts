@@ -10,7 +10,7 @@
 - `STDINMAN_BOT_TOKEN` and `STDINMAN_VOICE_CHANNEL_ID` environment variables, so the token does not have to be passed on the command line.
 - `--volume` / `volume` and `--opus-bitrate` / `opus_bitrate`.
 - `-v/--verbose`, `-V/--version`, and short flags `-s`, `-d`, `-c`.
-- Unit and integration tests (`bun test`), GitHub Actions CI on Linux/macOS/Windows, a tag-driven release workflow, and Dependabot.
+- Unit and integration tests (`bun test`), GitHub Actions CI on Linux/macOS/Windows, a tag-driven release workflow with optional npm trusted publishing (OIDC), and Dependabot.
 
 ### Fixed
 

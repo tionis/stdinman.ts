@@ -11,8 +11,6 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v7
 
@@ -20,7 +18,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Check tag matches package.json version
@@ -46,9 +44,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${GITHUB_REF_NAME}" ./*.tgz --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
 
-      # Publishing to npm is opt-in: add an NPM_TOKEN repository secret to enable it.
+      # Publishes via npm trusted publishing (OIDC, no token; provenance is added automatically).
+      # Opt-in: configure this workflow as a trusted publisher on npmjs.com, then set the
+      # repository variable NPM_PUBLISH=true.
       - name: Publish to npm
-        if: env.NPM_TOKEN != ''
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish ./*.tgz --provenance --access public
+        if: vars.NPM_PUBLISH == 'true'
+        run: |
+          npm install -g npm@latest
+          npm publish ./*.tgz --access public

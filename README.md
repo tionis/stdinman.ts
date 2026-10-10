@@ -174,7 +174,13 @@ Code layout:
 - `ts/stream.ts`: Discord client, voice connection, and reconnect logic
 - `ts/doctor.ts`: `stdinman doctor`
 
-CI runs the typecheck, tests, and build on Linux, macOS and Windows. To release, bump `version` in `package.json`, update `CHANGELOG.md`, and push a `vX.Y.Z` tag. The release workflow attaches the npm tarball to a GitHub release, and also publishes to npm if an `NPM_TOKEN` secret is configured.
+CI runs the typecheck, tests, and build on Linux, macOS and Windows. To release, bump `version` in `package.json`, update `CHANGELOG.md`, and push a `vX.Y.Z` tag. The release workflow attaches the npm tarball to a GitHub release.
+
+Publishing to npm uses [trusted publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC), so no npm token is stored in the repository. To enable it:
+
+1. Publish the first version manually (`npm login && npm publish --access public`), because a trusted publisher can only be configured for a package that already exists.
+2. On npmjs.com, open the package settings and add a trusted publisher: GitHub Actions, repository `tionis/stdinman.ts`, workflow `release.yml`.
+3. Set the repository variable `NPM_PUBLISH` to `true` (Settings → Secrets and variables → Actions → Variables).
 
 ## Attribution
 
