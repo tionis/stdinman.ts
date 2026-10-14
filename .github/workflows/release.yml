@@ -20,7 +20,7 @@ jobs:
           - { os: macos-latest, target: darwin-arm64 }
           - { os: windows-latest, target: windows-x64, ext: .exe }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
 
@@ -37,7 +37,7 @@ jobs:
           "$bin" doctor -c does-not-exist.toml | tee doctor.txt || true
           grep -E "ok +DAVE library" doctor.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: stdinman-${{ matrix.target }}
           path: dist/release/*
@@ -50,11 +50,11 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -77,7 +77,7 @@ jobs:
       - name: Pack
         run: npm pack
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist/release
           pattern: stdinman-*
